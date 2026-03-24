@@ -23,12 +23,10 @@ except ImportError:
     }
     USER_ID = "Unknown"
 
-# --- CONFIGURATION ---
 PLATAFORMA = "Sapo Jobs"
 DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))  # 0 = unlimited
 
-# Pretend to be a normal browser to avoid being blocked
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
 }
@@ -40,9 +38,7 @@ session.mount('https://', HTTPAdapter(max_retries=retries))
 
 # Removed manual local cursor job checks in favor of db_helper
 
-print("==================================================")
 print(f" Starting Scraper: {PLATAFORMA}")
-print("==================================================")
 
 try:
     # (Database connection managed globally by db_helper now)
@@ -58,7 +54,6 @@ try:
             resposta.raise_for_status() 
             soup_pesquisa = BeautifulSoup(resposta.text, 'html.parser')
 
-            # --- CRITICAL HTML DISCOVERY ---
             vue_component_tag = soup_pesquisa.find('search-results-component')
             if not vue_component_tag:
                 print("Could not find 'search-results-component' in HTML. Skipping.")
@@ -92,10 +87,6 @@ try:
 
                     if job_exists(link_completo): continue
 
-                    print(f"\n[NEW JOB DISCOVERED] {titulo}")
-                    print(f"-> Company: {empresa}")
-                    print(f"-> Location: {localizacao}")
-
                     # 5. Deep Fetch for full description
                     try:
                         time.sleep(random.uniform(0.5, 1.5)) 
@@ -126,7 +117,6 @@ try:
                             total_novas_global += 1
 
                             if MAX_JOBS > 0 and total_novas_global >= MAX_JOBS:
-                                print(f"\n[LIMIT REACHED] Max {MAX_JOBS} jobs saved. Stopping early.")
                                 break
 
                     except Exception as e:
@@ -142,7 +132,6 @@ try:
 
     print("\n==================================================")
     print(f" Summary: {total_novas_global} total new jobs from {PLATAFORMA} were saved.")
-    print("==================================================")
 
 except Exception as e:
     print(f"General error accessing {PLATAFORMA}: {e}")

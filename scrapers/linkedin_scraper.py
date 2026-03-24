@@ -32,7 +32,6 @@ except ImportError:
 
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))  # 0 = unlimited
 
-# --- 1. CHROME DRIVER CONFIGURATION ---
 def configurar_driver():
     """Configures the Undetected ChromeDriver."""
     print("Configuring Undetected ChromeDriver (Xvfb Mode)...")
@@ -45,14 +44,13 @@ def configurar_driver():
     driver = uc.Chrome(options=options)
     return driver
 
-# --- 3. CORE LOGIC: PROCESS ONE SEARCH ---
 def processar_uma_pesquisa(driver, categoria_nome, url_pesquisa, vagas_ja_inseridas=0):
-    print(f"\n[PROCESSING SEARCH] {categoria_nome}...")
+    print(f"Search: {categoria_nome}")
     
     try:
         driver.get(url_pesquisa)
         espera = random.uniform(6.0, 10.0) 
-        print(f"Waiting {espera:.1f} seconds to simulate human behavior...")
+        
         time.sleep(espera)
         
         print("Scrolling to load more jobs...")
@@ -108,7 +106,6 @@ def processar_uma_pesquisa(driver, categoria_nome, url_pesquisa, vagas_ja_inseri
                         titulo=titulo, empresa=empresa, localizacao=localizacao,
                         link=link_absoluto, data_pub=data_pub, categoria=categoria_nome
                     ):
-                        print(f"  > [NEW JOB INDEXED] {titulo} ({empresa}, {localizacao})")
                         novas_vagas_cont += 1
                         total_agora = vagas_ja_inseridas + novas_vagas_cont
                         if MAX_JOBS > 0 and total_agora >= MAX_JOBS:
@@ -127,13 +124,12 @@ def processar_uma_pesquisa(driver, categoria_nome, url_pesquisa, vagas_ja_inseri
         print("Error details saved to /app/logs/")
         return 0
 
-# --- 4. MAIN LOOP ---
 def iniciar_scraper_linkedin():
-    print(f"== Starting Scraper: {PLATAFORMA} (Multi-Search via Undetected Selenium) ==")
+    print(f"Starting Scraper: {PLATAFORMA}")
     
     vdisplay = Xvfb(width=1920, height=1080)
     vdisplay.start()
-    print("Virtual display Xvfb started.")
+    
     
     try:
         driver = configurar_driver()
@@ -153,7 +149,7 @@ def iniciar_scraper_linkedin():
             driver.quit()
             print("Selenium driver closed.")
         vdisplay.stop()
-        print("Virtual display Xvfb closed.")
+        
 
 # --- 5. EXECUÇÃO ---
 if __name__ == '__main__':

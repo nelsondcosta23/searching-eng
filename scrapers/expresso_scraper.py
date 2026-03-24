@@ -6,7 +6,6 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 import os
 
-# --- CONFIGURATION ---
 DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))  # 0 = unlimited
 PLATAFORMA = 'Expresso Jobs'
@@ -25,8 +24,6 @@ except ImportError:
     NEGATIVE_KEYWORDS = []
     USER_ID = "Unknown"
 
-
-# --- 1. SEARCH CONFIGURATION BY CATEGORY ---
 RSS_FEEDS = {
     'Administration': 'https://expressoemprego.pt/rss/administracao',
     'Finance': 'https://expressoemprego.pt/rss/area-financeira',
@@ -47,9 +44,8 @@ RSS_FEEDS = {
     'Commerce & Services': 'https://expressoemprego.pt/rss/comercio-servicos'
 }
 
-# --- 3. CORE FUNCTION: PROCESS ONE RSS FEED ---
 def processar_um_feed(categoria_nome, url_feed):
-    print(f"\n[PROCESSING CATEGORY] {categoria_nome}...")
+    print(f"Category: {categoria_nome}")
     
     feed = feedparser.parse(url_feed)
     
@@ -104,13 +100,11 @@ def processar_um_feed(categoria_nome, url_feed):
             )
 
             if salvo:
-                print(f"  > [NEW JOB INDEXED] {titulo} ({empresa}, {localizacao})")
                 novas_vagas_cont += 1
 
     print(f"Finished: {novas_vagas_cont} new jobs indexed for {categoria_nome}.")
     return novas_vagas_cont
 
-# --- 5. MAIN LOOP ---
 def iniciar_scraper_expresso():
     print(f"== Starting Scraper: {PLATAFORMA} (Multi-Category via RSS) ==")
     
@@ -120,7 +114,6 @@ def iniciar_scraper_expresso():
             novas = processar_um_feed(cat_nome, cat_url)
             total_novas += novas
             if MAX_JOBS > 0 and total_novas >= MAX_JOBS:
-                print(f"\n[LIMIT REACHED] Max {MAX_JOBS} jobs saved. Stopping early.")
                 break
 
         print("\n" + "=" * 20)

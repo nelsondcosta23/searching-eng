@@ -12,7 +12,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# --- Custom CSS ---
 st.markdown("""
 <style>
     .main { background-color: #F8F9FA; }
@@ -32,7 +31,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Header ---
 st.markdown("""
 <div style="background:#4F46E5;padding:28px 32px;border-radius:14px;margin-bottom:24px;">
     <h1 style="color:white;margin:0;">💼 Job Search Dashboard</h1>
@@ -40,7 +38,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# --- Load Data ---
 @st.cache_data(ttl=60)
 def load_jobs():
     if not os.path.exists(DB_PATH):
@@ -63,7 +60,6 @@ df = load_jobs()
 if df.empty:
     st.warning("Database not found or empty. Please run the scrapers first.")
 else:
-    # --- Metrics ---
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("📋 Total Jobs", len(df))
     col2.metric("✅ Active Jobs", len(df[df['status'] == 'Ativa']))
@@ -73,8 +69,7 @@ else:
 
     st.markdown("---")
 
-    # --- Filters ---
-    st.subheader("🔎 Filters")
+    st.write("Filters")
     col_a, col_b, col_c, col_d, col_e = st.columns([2, 2, 2, 2, 2])
 
     search_txt = col_a.text_input("Keywords", placeholder="e.g. Python, Porto...")
@@ -86,7 +81,6 @@ else:
     categories_available = ["All"] + sorted(df['categoria'].dropna().unique().tolist())
     category_sel = col_e.selectbox("Category", categories_available)
 
-    # --- Apply Filters ---
     df_filtered = df.copy()
 
     if search_txt:
@@ -111,7 +105,6 @@ else:
 
     st.markdown(f"**{len(df_filtered)} jobs found**")
 
-    # --- Results Table ---
     if df_filtered.empty:
         st.info("No jobs found with these filters.")
     else:
@@ -178,7 +171,6 @@ else:
             }
         )
 
-# --- Footer ---
 st.markdown("---")
 st.markdown(
     "<p style='text-align:center;color:#9CA3AF;font-size:13px;'>Automatic Job Scraping System | Data updated automatically via Cron.</p>",

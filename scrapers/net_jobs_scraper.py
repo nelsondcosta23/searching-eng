@@ -10,7 +10,6 @@ import random
 import re
 from datetime import datetime
 
-# --- CONFIGURATION ---
 PLATAFORMA = "Net-Empregos"
 URL_RSS = "https://www.net-empregos.com/rssfeed.asp"
 DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
@@ -30,8 +29,6 @@ except ImportError:
     NEGATIVE_KEYWORDS = []
     USER_ID = "Unknown"
 
-
-# Pretend to be a normal browser to avoid being blocked
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
@@ -43,9 +40,7 @@ session.mount('https://', HTTPAdapter(max_retries=retries))
 
 # Removed manual local cursor job checks in favor of db_helper
 
-print("==================================================")
 print(f" Starting Hybrid Scraper: {PLATAFORMA}")
-print("==================================================")
 
 try:
     # 1. Connect to Database (delegated to db_helper)
@@ -86,7 +81,6 @@ try:
             continue
 
         print(f"\n[NEW JOB FOUND] {titulo}")
-        print(f"Extracting deep details from: {link}")
 
         # 4. Deep Fetch of the job page
         try:
@@ -124,10 +118,8 @@ try:
 
             if salvo:
                 vagas_inseridas += 1
-                print("-> Saved successfully to database.")
 
             if MAX_JOBS > 0 and vagas_inseridas >= MAX_JOBS:
-                print(f"\n[LIMIT REACHED] Max {MAX_JOBS} jobs saved. Stopping early.")
                 break
 
         except Exception as e:
@@ -135,7 +127,6 @@ try:
 
     print("\n==================================================")
     print(f" Summary: {vagas_inseridas} new detailed jobs were saved.")
-    print("==================================================")
 
 except Exception as e:
     print(f"A general error occurred: {e}")

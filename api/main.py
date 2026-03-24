@@ -1,9 +1,4 @@
-"""
-Job Search Results API
-======================
-Exposes job results from the SQLite database per user_id.
-Any external software can call this API to retrieve scraped job results.
-"""
+"""Job Search API Service"""
 from fastapi import FastAPI, Query, HTTPException, Depends, Security, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +8,6 @@ from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel
 
-# --- Configuration ---
 DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
 API_KEY = os.environ.get('API_KEY', 'changeme-please')
 
@@ -32,7 +26,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Auth ---
 security = HTTPBearer(auto_error=False)
 # Accepts key via: Authorization: Bearer <key>  OR  ?api_key=<key>
 def verify_api_key(
@@ -48,7 +41,6 @@ def verify_api_key(
         return key_from_query
     raise HTTPException(status_code=401, detail="Invalid or missing API key. Send via 'Authorization: Bearer <key>' header or '?api_key=<key>' query param.")
 
-# --- Models ---
 class Job(BaseModel):
     id: int
     user_id: Optional[str]
@@ -69,7 +61,6 @@ class JobsResponse(BaseModel):
     filters: dict
     jobs: List[Job]
 
-# --- DB Helper ---
 def get_jobs_from_db(user_id: str, status: Optional[str], platform: Optional[str], limit: int, include_description: bool, run_date: Optional[str]) -> List[dict]:
     if not os.path.exists(DB_PATH):
         return []
@@ -107,7 +98,6 @@ def get_jobs_from_db(user_id: str, status: Optional[str], platform: Optional[str
     conn.close()
     return rows
 
-# --- Routes ---
 @app.get("/api/v1/status", tags=["Health"])
 def health_check():
     """Check if the API is running and the database is accessible."""
