@@ -1,0 +1,64 @@
+import sqlite3
+import os
+import time
+import random
+from datetime import datetime
+
+DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
+
+def _get_connection():
+    """Returns a new SQLite connection with WAL mode enabled and a 20s timeout."""
+    conn = sqlite3.connect(DB_PATH, timeout=20)
+    conn.execute('PRAGMA journal_mode=WAL;')
+    return conn
+
+def job_exists(link: str) -> bool:
+    """Checks if a job link is already in the database."""
+    tentativas = 5
+    while tentativas > 0:
+        conn = None
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT 1 FROM vagas WHERE link = ?', (link,))
+            exists = cursor.fetchone() is not None
+            return exists
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e).lower():
+                time.sleep(1 + random.uniform(0.1, 0.5))
+                tentativas -= 1
+            else:
+                raise e
+        finally:
+            if conn:
+                conn.close()
+    return False
+
+def save_job(user_id: str, plataforma: str, id_externo: str, titulo: str, empresa: str, localizacao: str, link: str, data_pub: str = "Recent", categoria: str = "Unknown", descricao_completa: str = "") -> bool:
+    """Saves a new job to the database with safe retry logic (Schema v3)."""
+    data_agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    tentativas = 5
+    while tentativas > 0:
+        conn = None
+        try:
+            conn = _get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO vagas (user_id, plataforma, id_externo, titulo, empresa, localizacao, link, data_publicacao, data_scraped, categoria, descricao_completa, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Ativa')
+            ''', (user_id, plataforma, id_externo, titulo, empresa, localizacao, link, data_pub, data_agora, categoria, descricao_completa))
+            conn.commit()
+            return True
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e).lower():
+                time.sleep(1 + random.uniform(0.1, 0.5))
+                tentativas -= 1
+            else:
+                raise e
+        except sqlite3.IntegrityError:
+            # Job is already saved (caught by UNIQUE constraint on the schema)
+            return False 
+        finally:
+            if conn:
+                conn.close()
+    return False

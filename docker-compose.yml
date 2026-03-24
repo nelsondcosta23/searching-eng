@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  python_scraper:
+    container_name: python_scraper
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - ./database:/app/database
+    env_file:
+      - .env
+    working_dir: /app
+    # Iniciar o cron e manter o container vivo
+    command: bash -c "service cron start && tail -f /dev/null"
+
+  streamlit_app:
+    container_name: streamlit_app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - ./database:/app/database
+    environment:
+      - PYTHONUNBUFFERED=1
+    working_dir: /app
+    ports:
+      - "8501:8501"
+    command: streamlit run /app/app/job_dashboard.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+    depends_on:
+      - python_scraper
+
+  job_api:
+    container_name: job_api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - ./database:/app/database
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    working_dir: /app
+    ports:
+      - "8080:8080"
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
+    depends_on:
+      - python_scraper

@@ -1,0 +1,11 @@
+# Job search scraping system crontab
+# Format: minute hour day month day_of_week command
+
+# Job Orchestrator: every day at 00:00 UTC
+0 0 * * * root cd /app && /usr/local/bin/python /app/automation/orchestrator.py >> /app/logs/scraper.log 2>&1
+
+# Daily Email: every day at 13:15 UTC
+15 13 * * * root cd /app && /usr/local/bin/python /app/automation/send_email.py >> /app/logs/scraper.log 2>&1
+
+# Weekly Cleaning: every Sunday at 03:00 UTC
+0 3 * * 0 root cd /app && /usr/local/bin/python /app/automation/clean_jobs.py >> /app/logs/scraper.log 2>&1
