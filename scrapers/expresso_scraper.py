@@ -5,6 +5,14 @@ import re
 from bs4 import BeautifulSoup 
 from datetime import datetime
 import os
+import time
+import random
+
+import undetected_chromedriver as uc
+from xvfbwrapper import Xvfb
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))  # 0 = unlimited
@@ -44,23 +52,30 @@ RSS_FEEDS = {
     'Commerce & Services': 'https://expressoemprego.pt/rss/comercio-servicos'
 }
 
-def processar_um_feed(categoria_nome, url_feed):
+def configurar_driver():
+    """Configures the Undetected ChromeDriver."""
+    options = uc.ChromeOptions()
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--user-data-dir=/tmp/expresso-chrome-profile")
+    driver = uc.Chrome(options=options)
+    driver.get('about:blank')
+    return driver
+
+def processar_um_feed(categoria_nome, url_feed, driver, total_novas_global):
     print(f"Category: {categoria_nome}")
     
     feed = feedparser.parse(url_feed)
     
     if feed.status != 200:
-        print(f"Error accessing {categoria_nome} feed (Status: {feed.status}). Skipping.")
         return 0
 
     novas_vagas_cont = 0
     total_vagas_no_feed = len(feed.entries)
     
     if total_vagas_no_feed == 0:
-        print(f"No active jobs found in {categoria_nome} feed.")
         return 0
-
-    print(f"Found {total_vagas_no_feed} potential jobs in the feed.")
 
     for entrada in feed.entries:
         titulo = entrada.title
@@ -77,49 +92,107 @@ def processar_um_feed(categoria_nome, url_feed):
                 empresa = partes[0].strip()
                 localizacao = partes[1].strip()
 
-        # Fetch text for keyword filtering
+        # Keyword filtering
         texto_busca = (titulo + " " + raw_desc).lower()
         if not any(kw in texto_busca for kw in KEYWORDS):
             continue
 
         if NEGATIVE_KEYWORDS and any(nkw in texto_busca for nkw in NEGATIVE_KEYWORDS):
-            print(f"  [BLOCKED] '{titulo}' contains a negative keyword.")
             continue
 
-        # 4. Integrated Integration
+        # If it's a new job, extract the deep details
         if not job_exists(link):
             id_externo = None
-            match = re.search(r'/anuncio/(\d+)', link)
+            match = re.search(r'/(\d+)$', link)
             if match:
                 id_externo = match.group(1)
+
+            descricao_completa = ""
+            observacoes = ""
+            
+            # Extract Deep Information with Selenium
+            try:
+                driver.execute_script(f"window.open('{link}', '_blank');")
+                driver.switch_to.window(driver.window_handles[-1])
+                time.sleep(2.0 + random.uniform(0.1, 0.5))
+                
+                deep_soup = BeautifulSoup(driver.page_source, 'html.parser')
+                
+                # Full specific text block in common Expresso structure
+                # Typically inside the main app div or elements with class like 'detalhe-anuncio' or 'description'
+                desc_tags = deep_soup.find_all(['p', 'div', 'section'])
+                best_block = ""
+                for tag in desc_tags:
+                    text = tag.get_text(separator='\\n', strip=True)
+                    # The job description is usually the largest text block
+                    if len(text) > len(best_block) and 'Cookies' not in text:
+                        best_block = text
+                
+                # Filter out pure navigation boilerplate
+                if len(best_block) > 100:
+                    descricao_completa = best_block
+                else:
+                    descricao_completa = re.sub(r'<[^>]+>', '', raw_desc)
+                    
+                # Look for Reference or extra metadata chips
+                meta_tags = deep_soup.find_all(['span', 'li', 'div'])
+                obs_list = []
+                for m in meta_tags:
+                    t = m.get_text(strip=True)
+                    if t.startswith('Ref'):
+                        obs_list.append(t)
+                observacoes = " | ".join(list(set(obs_list))[:3])
+                
+            except Exception as e:
+                print(f"  Deep extraction error: {e}")
+                descricao_completa = re.sub(r'<[^>]+>', '', raw_desc)
+            finally:
+                if len(driver.window_handles) > 1:
+                    driver.close()
+                    driver.switch_to.window(driver.window_handles[0])
 
             salvo = save_job(
                 user_id=USER_ID, plataforma=PLATAFORMA, id_externo=id_externo,
                 titulo=titulo, empresa=empresa, localizacao=localizacao,
-                link=link, data_pub=data_pub, categoria=categoria_nome
+                link=link, data_pub=data_pub, categoria=categoria_nome,
+                descricao_completa=descricao_completa, observacoes=observacoes
             )
 
             if salvo:
                 novas_vagas_cont += 1
+                total_novas_global += 1
+
+                if MAX_JOBS > 0 and total_novas_global >= MAX_JOBS:
+                    break
 
     print(f"Finished: {novas_vagas_cont} new jobs indexed for {categoria_nome}.")
     return novas_vagas_cont
 
 def iniciar_scraper_expresso():
-    print(f"== Starting Scraper: {PLATAFORMA} (Multi-Category via RSS) ==")
+    print(f"Starting Scraper: {PLATAFORMA}")
     
-    total_novas = 0
+    vdisplay = Xvfb(width=1920, height=1080)
+    vdisplay.start()
+
+    driver = None
     try:
+        driver = configurar_driver()
+        total_novas_global = 0
+
         for cat_nome, cat_url in RSS_FEEDS.items():
-            novas = processar_um_feed(cat_nome, cat_url)
-            total_novas += novas
-            if MAX_JOBS > 0 and total_novas >= MAX_JOBS:
+            novas = processar_um_feed(cat_nome, cat_url, driver, total_novas_global)
+            total_novas_global += novas
+            if MAX_JOBS > 0 and total_novas_global >= MAX_JOBS:
+                print("[GLOBAL LIMIT REACHED] Stopping multi-search.")
                 break
 
-        print("\n" + "=" * 20)
-        print(f"Processing finished. {total_novas} jobs added globally on Expresso.")
+        print(f"Processing finished. {total_novas_global} jobs added globally on Expresso.")
     except Exception as e:
         print(f"An error occurred in the pipeline: {e}")
+    finally:
+        if driver:
+            driver.quit()
+        vdisplay.stop()
 
 if __name__ == '__main__':
     iniciar_scraper_expresso()

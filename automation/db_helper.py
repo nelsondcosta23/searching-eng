@@ -34,8 +34,8 @@ def job_exists(link: str) -> bool:
                 conn.close()
     return False
 
-def save_job(user_id: str, plataforma: str, id_externo: str, titulo: str, empresa: str, localizacao: str, link: str, data_pub: str = "Recent", categoria: str = "Unknown", descricao_completa: str = "") -> bool:
-    """Saves a new job to the database with safe retry logic (Schema v3)."""
+def save_job(user_id: str, plataforma: str, id_externo: str, titulo: str, empresa: str, localizacao: str, link: str, data_pub: str = "Recent", categoria: str = "Unknown", descricao_completa: str = "", recrutador_nome: str = "", recrutador_link: str = "", observacoes: str = "") -> bool:
+    """Saves a new job to the database with safe retry logic (Schema v4)."""
     data_agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     tentativas = 5
     while tentativas > 0:
@@ -44,9 +44,9 @@ def save_job(user_id: str, plataforma: str, id_externo: str, titulo: str, empres
             conn = _get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO vagas (user_id, plataforma, id_externo, titulo, empresa, localizacao, link, data_publicacao, data_scraped, categoria, descricao_completa, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Ativa')
-            ''', (user_id, plataforma, id_externo, titulo, empresa, localizacao, link, data_pub, data_agora, categoria, descricao_completa))
+                INSERT INTO vagas (user_id, plataforma, id_externo, titulo, empresa, localizacao, link, data_publicacao, data_scraped, categoria, descricao_completa, status, recrutador_nome, recrutador_link, observacoes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Ativa', ?, ?, ?)
+            ''', (user_id, plataforma, id_externo, titulo, empresa, localizacao, link, data_pub, data_agora, categoria, descricao_completa, recrutador_nome, recrutador_link, observacoes))
             conn.commit()
             return True
         except sqlite3.OperationalError as e:

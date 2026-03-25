@@ -12,8 +12,8 @@ try:
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # Create the 'vagas' table (Esquema v3)
-    print("Creating 'vagas' table (Schema v3)...")
+    # Create the 'vagas' table (Schema v4)
+    print("Creating 'vagas' table (Schema v4)...")
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS vagas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,6 +31,9 @@ try:
             status TEXT DEFAULT 'Ativa', -- 'Ativa' or 'Expirada'
             categoria TEXT,
             status_envio INTEGER DEFAULT 0,
+            recrutador_nome TEXT,
+            recrutador_link TEXT,
+            observacoes TEXT,
             CONSTRAINT unique_vaga_platform UNIQUE (plataforma, id_externo)
         )
     ''')

@@ -53,6 +53,9 @@ class Job(BaseModel):
     data_scraped: Optional[str]
     status: Optional[str]
     descricao_completa: Optional[str] = None
+    recrutador_nome: Optional[str] = None
+    recrutador_link: Optional[str] = None
+    observacoes: Optional[str] = None
 
 class JobsResponse(BaseModel):
     user_id: str
@@ -69,7 +72,7 @@ def get_jobs_from_db(user_id: str, status: Optional[str], platform: Optional[str
     
     query = f"""
         SELECT id, user_id, titulo, empresa, localizacao, plataforma, categoria, link,
-               COALESCE(data_scraped, '') AS data_scraped, status{desc_col}
+               COALESCE(data_scraped, '') AS data_scraped, status, recrutador_nome, recrutador_link, observacoes{desc_col}
         FROM vagas
         WHERE user_id = ?
     """
@@ -165,7 +168,7 @@ def get_single_job(
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, user_id, titulo, empresa, localizacao, plataforma, categoria, link, data_scraped, status, descricao_completa FROM vagas WHERE id = ?",
+        "SELECT id, user_id, titulo, empresa, localizacao, plataforma, categoria, link, data_scraped, status, descricao_completa, recrutador_nome, recrutador_link, observacoes FROM vagas WHERE id = ?",
         (job_id,)
     )
     row = cursor.fetchone()

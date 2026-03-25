@@ -101,10 +101,53 @@ def processar_uma_pesquisa(driver, categoria_nome, url_pesquisa, vagas_ja_inseri
 
                 id_externo = vaga.get('data-entity-id')
                 if not job_exists(link_absoluto):
+                    descricao_completa = ""
+                    recrutador_nome = ""
+                    recrutador_link = ""
+                    observacoes = ""
+                    
+                    try:
+                        # Deep Extraction Phase (Multi-Tab)
+                        driver.execute_script(f"window.open('{link_absoluto}', '_blank');")
+                        driver.switch_to.window(driver.window_handles[-1])
+                        time.sleep(2.0 + random.uniform(0.5, 1.5))
+                        
+                        deep_soup = BeautifulSoup(driver.page_source, 'html.parser')
+                        
+                        # Description
+                        desc_tag = deep_soup.find(class_='show-more-less-html__markup') or deep_soup.find(class_='description')
+                        if desc_tag: descricao_completa = desc_tag.get_text(separator='\\n').strip()
+                        
+                        # Recruiter Info
+                        rec_tag = deep_soup.find(class_='message-the-recruiter__name') or deep_soup.find('h3', class_='base-main-card__title')
+                        if rec_tag: recrutador_nome = rec_tag.get_text().strip()
+                        
+                        rec_link_tag = deep_soup.find('a', class_='base-main-card__info')
+                        if rec_link_tag: recrutador_link = rec_link_tag.get('href', '').split('?')[0]
+                        
+                        # Observations (Criteria List)
+                        obs_list = []
+                        criteria_items = deep_soup.find_all(class_='description__job-criteria-item')
+                        for item in criteria_items:
+                            hdr = item.find('h3', class_='description__job-criteria-subheader')
+                            val = item.find('span', class_='description__job-criteria-text')
+                            if hdr and val:
+                                obs_list.append(f"{hdr.get_text().strip()}: {val.get_text().strip()}")
+                        if obs_list: observacoes = " | ".join(obs_list)
+                        
+                    except Exception as e:
+                        print(f"Deep scraping error for {titulo}: {e}")
+                    finally:
+                        # Always safely close the deep tab and return to the search list
+                        driver.close()
+                        driver.switch_to.window(driver.window_handles[0])
+
                     if save_job(
                         user_id=USER_ID, plataforma=PLATAFORMA, id_externo=id_externo,
                         titulo=titulo, empresa=empresa, localizacao=localizacao,
-                        link=link_absoluto, data_pub=data_pub, categoria=categoria_nome
+                        link=link_absoluto, data_pub=data_pub, categoria=categoria_nome,
+                        descricao_completa=descricao_completa, recrutador_nome=recrutador_nome,
+                        recrutador_link=recrutador_link, observacoes=observacoes
                     ):
                         novas_vagas_cont += 1
                         total_agora = vagas_ja_inseridas + novas_vagas_cont
