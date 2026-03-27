@@ -9,11 +9,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup 
 import undetected_chromedriver as uc
-from xvfbwrapper import Xvfb
 import os
 
 # Global Configurations
-DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
+DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 PLATAFORMA = 'Indeed PT (Selenium)'
 
 import sys
@@ -40,7 +39,9 @@ def configurar_driver():
     # Docker optimizations
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--user-data-dir=/tmp/chrome-profile")
+    options.add_argument("--headless=new")
+    profile_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tmp', 'chrome-profile')
+    options.add_argument(f"--user-data-dir={profile_dir}")
     
     driver = uc.Chrome(options=options)
     return driver
@@ -104,18 +105,17 @@ def processar_uma_pesquisa(driver, categoria_nome, url_pesquisa, vagas_ja_inseri
 
     except Exception as e:
         print(f"Critical Error accessing Indeed for {categoria_nome}: {e}")
-        driver.save_screenshot('/app/logs/indeed_error.png')
-        with open('/app/logs/indeed_error.html', 'w', encoding='utf-8') as f:
+        logs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+        os.makedirs(logs_dir, exist_ok=True)
+        driver.save_screenshot(os.path.join(logs_dir, 'indeed_error.png'))
+        with open(os.path.join(logs_dir, 'indeed_error.html'), 'w', encoding='utf-8') as f:
             f.write(driver.page_source)
-        print("Error details saved to /app/logs/")
+        print("Error details saved to logs/")
         return 0
 
 def iniciar_scraper_indeed():
     print(f"Starting Scraper: {PLATAFORMA}")
     
-    # Start a Virtual Display (Xvfb)
-    vdisplay = Xvfb(width=1920, height=1080)
-    vdisplay.start()
     
     
     
@@ -137,7 +137,6 @@ def iniciar_scraper_indeed():
         if 'driver' in locals() and driver:
             driver.quit()
             print("Selenium driver closed.")
-        vdisplay.stop()
         
 
 if __name__ == '__main__':

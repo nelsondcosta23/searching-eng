@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel
 
-DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
+DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 API_KEY = os.environ.get('API_KEY', 'changeme-please')
 
 app = FastAPI(
@@ -76,7 +76,7 @@ def get_jobs_from_db(user_id: str, status: Optional[str], platform: Optional[str
         FROM vagas
         WHERE user_id = ?
     """
-    params = [user_id]
+    params: list = [user_id]
 
     if run_date:
         query += " AND DATE(data_scraped) = ?"
@@ -123,7 +123,7 @@ def health_check():
 @app.get("/api/v1/jobs", response_model=JobsResponse, tags=["Jobs"])
 def get_jobs(
     user_id: str = Query(..., description="The user ID to filter results for."),
-    run_date: Optional[str] = Query(None, description="Date to filter scraping results (YYYY-MM-DD). Defaults to today."),
+    run_date: Optional[str] = Query(None, description="Date to filter scraping results (YYYY-MM-DD). Defaults to today. Use 'all' for all dates."),
     status: Optional[str] = Query(None, description="Filter by status: 'Ativa' or 'Expirada'. Default: all."),
     platform: Optional[str] = Query(None, description="Filter by platform, e.g. 'LinkedIn', 'Indeed PT'."),
     limit: int = Query(500, ge=1, le=1000, description="Max number of results (1-1000). Default: 500."),
@@ -133,15 +133,15 @@ def get_jobs(
     """
     Retrieve jobs scraped for a given `user_id`.
     
-    By default, returns **only today's scraping results** (based on `data_scraped` date).
-    Use `run_date=YYYY-MM-DD` to query a specific past date, or `run_date=all` to return the full history.
+    By default, returns the most recent jobs across all dates up to the limit.
+    Use `run_date=YYYY-MM-DD` to query a specific past date.
     """
-    # Default to today's date unless 'all' or explicit date provided
+    # Default to fetching the most recent jobs across any date
     effective_date: Optional[str]
     if run_date is None:
-        effective_date = datetime.now().strftime('%Y-%m-%d')  # Default: today
+        effective_date = datetime.now().strftime('%Y-%m-%d')
     elif run_date.lower() == 'all':
-        effective_date = None  # No date filter = full history
+        effective_date = None
     else:
         effective_date = run_date
     

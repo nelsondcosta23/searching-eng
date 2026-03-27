@@ -10,10 +10,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup 
 import undetected_chromedriver as uc
-from xvfbwrapper import Xvfb
 
 # Global Configurations
-DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
+DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 PLATAFORMA = 'LinkedIn PT (Selenium)'
 
 import sys
@@ -39,7 +38,9 @@ def configurar_driver():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--user-data-dir=/tmp/linkedin-chrome-profile")
+    options.add_argument("--headless=new")
+    profile_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tmp', 'linkedin-chrome-profile')
+    options.add_argument(f"--user-data-dir={profile_dir}")
     
     driver = uc.Chrome(options=options)
     return driver
@@ -139,8 +140,9 @@ def processar_uma_pesquisa(driver, categoria_nome, url_pesquisa, vagas_ja_inseri
                         print(f"Deep scraping error for {titulo}: {e}")
                     finally:
                         # Always safely close the deep tab and return to the search list
-                        driver.close()
-                        driver.switch_to.window(driver.window_handles[0])
+                        if len(driver.window_handles) > 1:
+                            driver.close()
+                            driver.switch_to.window(driver.window_handles[0])
 
                     if save_job(
                         user_id=USER_ID, plataforma=PLATAFORMA, id_externo=id_externo,
@@ -161,17 +163,17 @@ def processar_uma_pesquisa(driver, categoria_nome, url_pesquisa, vagas_ja_inseri
 
     except Exception as e:
         print(f"Critical Error accessing LinkedIn for {categoria_nome}: {e}")
-        driver.save_screenshot('/app/logs/linkedin_error.png')
-        with open('/app/logs/linkedin_error.html', 'w', encoding='utf-8') as f:
+        logs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+        os.makedirs(logs_dir, exist_ok=True)
+        driver.save_screenshot(os.path.join(logs_dir, 'linkedin_error.png'))
+        with open(os.path.join(logs_dir, 'linkedin_error.html'), 'w', encoding='utf-8') as f:
             f.write(driver.page_source)
-        print("Error details saved to /app/logs/")
+        print("Error details saved to logs/")
         return 0
 
 def iniciar_scraper_linkedin():
     print(f"Starting Scraper: {PLATAFORMA}")
     
-    vdisplay = Xvfb(width=1920, height=1080)
-    vdisplay.start()
     
     
     try:
@@ -191,7 +193,6 @@ def iniciar_scraper_linkedin():
         if 'driver' in locals() and driver:
             driver.quit()
             print("Selenium driver closed.")
-        vdisplay.stop()
         
 
 # --- 5. EXECUÇÃO ---

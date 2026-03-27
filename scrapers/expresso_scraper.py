@@ -9,12 +9,11 @@ import time
 import random
 
 import undetected_chromedriver as uc
-from xvfbwrapper import Xvfb
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
+DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))  # 0 = unlimited
 PLATAFORMA = 'Expresso Jobs'
 
@@ -58,7 +57,9 @@ def configurar_driver():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--user-data-dir=/tmp/expresso-chrome-profile")
+    options.add_argument("--headless=new")
+    profile_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tmp', 'expresso-chrome-profile')
+    options.add_argument(f"--user-data-dir={profile_dir}")
     driver = uc.Chrome(options=options)
     driver.get('about:blank')
     return driver
@@ -170,9 +171,6 @@ def processar_um_feed(categoria_nome, url_feed, driver, total_novas_global):
 
 def iniciar_scraper_expresso():
     print(f"Starting Scraper: {PLATAFORMA}")
-    
-    vdisplay = Xvfb(width=1920, height=1080)
-    vdisplay.start()
 
     driver = None
     try:
@@ -192,7 +190,6 @@ def iniciar_scraper_expresso():
     finally:
         if driver:
             driver.quit()
-        vdisplay.stop()
 
 if __name__ == '__main__':
     iniciar_scraper_expresso()

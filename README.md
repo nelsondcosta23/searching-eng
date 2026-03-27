@@ -88,13 +88,14 @@ External software can fetch the latest scraped jobs for processing.
 
 **Query Parameters:**
 - `user_id` (Required): The Supabase user ID mapped to the jobs.
-- `run_date`: YYYY-MM-DD to filter by scrape date (Defaults to 'today'. Use 'all' for full history).
+- `run_date`: YYYY-MM-DD to filter by scrape date (Defaults to 'today'). Use `all` for full scraping history.
 - `status`: 'Ativa' or 'Expirada'
 - `limit`: Default 500 max jobs.
+- `include_description`: `true` or `false`. Includes the full job description in the JSON response.
 
 **Example Request:**
 ```bash
-curl "http://localhost:8080/api/v1/jobs?user_id=12345&run_date=all&api_key=your_super_secret_key_here"
+curl "http://localhost:8080/api/v1/jobs?user_id=U69mBuWyD5SH9euaPOqR3aUE5YpBl0sc&run_date=today&include_description=true&api_key=your_super_secret_key_here"
 ```
 
 ---

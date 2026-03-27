@@ -1,0 +1,22 @@
+venv/
+__pycache__/
+database/*.db
+database/*.sqlite3
+logs/
+.env
+.git/
+.vscode/
+tmp*/
+Profile*/
+*.log
+get_url.py
+.dockerignore
+.gitignore
+.env.example
+*.bat
+README.md
+# Keep these for orchestration but they aren't needed INSIDE the image files partition typically
+# but for simplicity we keep them or exclude them.
+# We skip MD files and development logs
+*.md
+!README.md

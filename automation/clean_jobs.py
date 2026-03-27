@@ -2,11 +2,15 @@ import sqlite3
 import os
 from datetime import datetime, timedelta
 
-DB_PATH       = os.environ.get('DB_PATH', '/app/database/vagas.db')
+DB_PATH       = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 DIAS_RETENCAO = int(os.environ.get('DIAS_RETENCAO', '45'))
 
 def clean_old_jobs():
     """Remove jobs older than DIAS_RETENCAO days from the database."""
+    if not os.path.exists(DB_PATH):
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Cleanup aborted: Database not found at {DB_PATH}")
+        return
+
     conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.execute('PRAGMA journal_mode=WAL;')
     cursor = conn.cursor()

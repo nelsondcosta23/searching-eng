@@ -11,7 +11,6 @@ import sys
 from datetime import datetime
 
 import undetected_chromedriver as uc
-from xvfbwrapper import Xvfb
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -30,7 +29,7 @@ except ImportError:
     USER_ID = "Unknown"
 
 PLATAFORMA = "Sapo Jobs"
-DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
+DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))  # 0 = unlimited
 
 HEADERS = {
@@ -48,7 +47,9 @@ def configurar_driver():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--user-data-dir=/tmp/sapo-chrome-profile")
+    options.add_argument("--headless=new")
+    profile_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tmp', 'sapo-chrome-profile')
+    options.add_argument(f"--user-data-dir={profile_dir}")
     driver = uc.Chrome(options=options)
     # Pre-open an empty tab to allow multi-tabbing from index 0
     driver.get('about:blank')
@@ -166,9 +167,6 @@ def processar_pesquisa(pesquisa_nome, url_pesquisa, driver, total_novas_global):
 def iniciar_scraper_sapo():
     print(f"Starting Scraper: {PLATAFORMA}")
 
-    vdisplay = Xvfb(width=1920, height=1080)
-    vdisplay.start()
-
     driver = None
     try:
         driver = configurar_driver()
@@ -188,7 +186,6 @@ def iniciar_scraper_sapo():
     finally:
         if driver:
             driver.quit()
-        vdisplay.stop()
 
 if __name__ == '__main__':
     iniciar_scraper_sapo()

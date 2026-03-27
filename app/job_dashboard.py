@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 import os
 
-DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
+DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 
 st.set_page_config(
     page_title="Job Search Dashboard 🔍",

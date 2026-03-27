@@ -4,7 +4,7 @@ import time
 import random
 from datetime import datetime
 
-DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
+DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 
 def _get_connection():
     """Returns a new SQLite connection with WAL mode enabled and a 20s timeout."""
@@ -32,6 +32,7 @@ def job_exists(link: str) -> bool:
         finally:
             if conn:
                 conn.close()
+    print(f"[DB ERROR] job_exists failed for link {link} after multiple retries (Database Locked).")
     return False
 
 def save_job(user_id: str, plataforma: str, id_externo: str, titulo: str, empresa: str, localizacao: str, link: str, data_pub: str = "Recent", categoria: str = "Unknown", descricao_completa: str = "", recrutador_nome: str = "", recrutador_link: str = "", observacoes: str = "") -> bool:
@@ -61,4 +62,5 @@ def save_job(user_id: str, plataforma: str, id_externo: str, titulo: str, empres
         finally:
             if conn:
                 conn.close()
+    print(f"[DB ERROR] save_job failed for {plataforma} after multiple retries (Database Locked).")
     return False

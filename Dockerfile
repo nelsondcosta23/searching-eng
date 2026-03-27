@@ -10,7 +10,6 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     unzip \
     curl \
-    xvfb \
     cron \
     && rm -rf /var/lib/apt/lists/*
 
@@ -28,7 +27,6 @@ RUN pip install --no-cache-dir \
     selenium \
     feedparser \
     undetected-chromedriver \
-    xvfbwrapper \
     streamlit \
     pandas \
     resend \

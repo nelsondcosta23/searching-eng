@@ -3,7 +3,7 @@ import os
 import requests
 from datetime import datetime, timedelta
 
-DB_PATH          = os.environ.get('DB_PATH', '/app/database/vagas.db')
+DB_PATH          = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 RESEND_API_KEY   = os.environ.get('RESEND_API_KEY', '')
 EMAIL_DESTINO    = os.environ.get('EMAIL_DESTINO', '')
 EMAIL_REMETENTE  = os.environ.get('EMAIL_REMETENTE', 'jobs@resend.dev')

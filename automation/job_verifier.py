@@ -7,7 +7,7 @@ from datetime import datetime
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
+DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 
 # Session Configuration with Retries
 session = requests.Session()
@@ -24,7 +24,11 @@ def verify_active_jobs():
     print(f"[{datetime.now().strftime('%H:%M:%S')}] STARTING VALIDITY CHECK")
     print(f"{'='*50}")
 
-    conn = sqlite3.connect(DB_PATH)
+    if not os.path.exists(DB_PATH):
+        print(f"Database not found at {DB_PATH}. Ensure the db exists before verifying.")
+        return
+
+    conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.execute('PRAGMA journal_mode=WAL;')
     cursor = conn.cursor()
 
@@ -44,13 +48,18 @@ def verify_active_jobs():
             time.sleep(random.uniform(0.5, 1.5))
             
             # Try a HEAD first (lighter)
-            try:
-                response = session.head(link, headers=HEADERS, timeout=10, allow_redirects=True)
-                status_code = response.status_code
-            except:
-                # If HEAD fails, try a GET (some sites block HEAD)
+            if 'Sapo' in platform or 'Net-Empregos' in platform:
+                # We need the response body to check for specific expiration text
                 response = session.get(link, headers=HEADERS, timeout=15, allow_redirects=True)
                 status_code = response.status_code
+            else:
+                try:
+                    response = session.head(link, headers=HEADERS, timeout=10, allow_redirects=True)
+                    status_code = response.status_code
+                except:
+                    # If HEAD fails, try a GET (some sites block HEAD)
+                    response = session.get(link, headers=HEADERS, timeout=15, allow_redirects=True)
+                    status_code = response.status_code
 
             now_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 

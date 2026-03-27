@@ -12,7 +12,7 @@ from datetime import datetime
 
 PLATAFORMA = "Net-Empregos"
 URL_RSS = "https://www.net-empregos.com/rssfeed.asp"
-DB_PATH = os.environ.get('DB_PATH', '/app/database/vagas.db')
+DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))  # 0 = unlimited
 
 import sys
