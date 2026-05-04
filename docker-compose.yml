@@ -6,13 +6,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
+    shm_size: 4gb
     volumes:
       - .:/app
       - ./database:/app/database
+      - ./logs:/app/logs
     env_file:
       - .env
     working_dir: /app
-    # Iniciar o cron e manter o container vivo passsando as vars de ambiente globais (.env) para o ecosistema cron
+    # Iniciar o cron e manter o container vivo passando as vars de ambiente globais (.env) para o ecosistema cron
     command: bash -c "env > /etc/environment && service cron start && tail -f /dev/null"
 
   streamlit_app:
@@ -20,6 +23,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
+    shm_size: 4gb
     volumes:
       - .:/app
       - ./database:/app/database
@@ -37,6 +42,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
     volumes:
       - .:/app
       - ./database:/app/database
@@ -50,3 +56,11 @@ services:
     command: uvicorn api.main:app --host 0.0.0.0 --port 8080 --reload
     depends_on:
       - python_scraper
+
+  cloudflare_tunnel:
+    container_name: cloudflare_tunnel
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --url http://job_api:8080
+    depends_on:
+      - job_api

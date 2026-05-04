@@ -1,22 +1,31 @@
 venv/
 __pycache__/
 database/*.db
-database/*.sqlite3
-logs/
+database/*.db-journal
+database/*.db-wal
+logs/*.log
+logs/*.png
+logs/*.html
 .env
 .git/
 .vscode/
-tmp*/
-Profile*/
+.gemini/
+scratch/
+tmp/
 *.log
+*.tmp
 get_url.py
+inspect_db.py
+test_*.py
+seed_*.py
+fix_*.py
+debug_*.py
 .dockerignore
 .gitignore
-.env.example
 *.bat
+API_INTEGRATION_GUIDE.md
+CLOUDFLARE_FIXED_DOMAIN_GUIDE.md
 README.md
-# Keep these for orchestration but they aren't needed INSIDE the image files partition typically
-# but for simplicity we keep them or exclude them.
-# We skip MD files and development logs
-*.md
-!README.md
+Dockerfile
+docker-compose.yml
+.env.example

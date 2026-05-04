@@ -1,108 +1,426 @@
 import os
 import json
+import sqlite3
 import urllib.request
 import urllib.parse
+import time
 from urllib.error import URLError
 
 PROFILE_URL = "https://jysdacsaobjulyzyzsdj.supabase.co/functions/v1/job-search-profile"
 
+# Path to the local SQLite database
+_DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
+
+# Cities that are subsets of a country (for remote_only de-duplication)
+_CITY_TO_COUNTRY = {
+    "Lisboa": "Portugal", "Porto": "Portugal", "Braga": "Portugal",
+    "Aveiro": "Portugal", "Coimbra": "Portugal", "Setúbal": "Portugal",
+    "London": "United Kingdom", "Manchester": "United Kingdom",
+    "Berlin": "Germany", "Munich": "Germany", "Hamburg": "Germany",
+    "Amsterdam": "Netherlands", "Rotterdam": "Netherlands",
+    "Dublin": "Ireland", "Cork": "Ireland",
+    "Madrid": "Spain", "Barcelona": "Spain",
+    "Paris": "France", "Lyon": "France",
+}
+
+# Global cache — 1 HTTP call per orchestration run
+_PROFILE_CACHE = None
+CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tmp', 'profile_cache.json')
+CACHE_TTL = 3600  # 1 hour
+
+
 def get_raw_profile():
-    """Fetches the full root JSON profile from the Supabase API."""
+    """Fetches the job search profile from the Supabase Edge Function with file caching."""
+    global _PROFILE_CACHE
+    
+    # 1. Check memory cache
+    if _PROFILE_CACHE:
+        return _PROFILE_CACHE
+        
+    # 2. Check file cache
+    if os.path.exists(CACHE_FILE):
+        try:
+            mtime = os.path.getmtime(CACHE_FILE)
+            if time.time() - mtime < CACHE_TTL:
+                with open(CACHE_FILE, 'r') as f:
+                    _PROFILE_CACHE = json.load(f)
+                    # print(f"[profile_fetcher] Profile loaded from file cache.")
+                    return _PROFILE_CACHE
+        except Exception as e:
+            print(f"[profile_fetcher] Error reading cache file: {e}")
+
+    # 3. Fetch from API
     try:
         req = urllib.request.Request(PROFILE_URL, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:
             if response.status == 200:
-                return json.loads(response.read().decode('utf-8'))
-    except (URLError, json.JSONDecodeError) as e:
-        print(f"Error fetching profile API: {e}")
+                content = response.read().decode('utf-8')
+                _PROFILE_CACHE = json.loads(content)
+                
+                # Save to file cache
+                try:
+                    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+                    with open(CACHE_FILE, 'w') as f:
+                        f.write(content)
+                except Exception as e:
+                    print(f"[profile_fetcher] Error saving cache file: {e}")
+                
+                print(f"[profile_fetcher] Profile loaded from API. user_id={_PROFILE_CACHE.get('user_id', 'N/A')}")
+                return _PROFILE_CACHE
+    except Exception as e:
+        print(f"[profile_fetcher] API Error: {e}")
+        
+    # 4. Fallback to expired cache if API fails
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, 'r') as f:
+                _PROFILE_CACHE = json.load(f)
+                print(f"[profile_fetcher] API failed. Using expired file cache.")
+                return _PROFILE_CACHE
+        except:
+            pass
+
     return {}
 
-def get_job_profile_v2():
-    data = get_raw_profile()
-    return data.get('job_search_strategy', {})
+
+def get_local_profile(user_id=None):
+    """
+    Reads a specific user profile from the local users_perfil SQLite table.
+    Priority: explicit user_id arg > TARGET_USER_ID env var > first active user.
+    Returns a dict with: user_id, keywords (list), negative_keywords (list), job_titles (list), locations (string).
+    """
+    result = {'user_id': None, 'keywords': [], 'negative_keywords': [], 'job_titles': [], 'locations': ''}
+    try:
+        if not os.path.exists(_DB_PATH):
+            return result
+
+        # Determine which user to load
+        target_uid = user_id or os.environ.get('TARGET_USER_ID')
+
+        conn = sqlite3.connect(_DB_PATH, timeout=5)
+        conn.row_factory = sqlite3.Row
+
+        if target_uid:
+            row = conn.execute(
+                "SELECT user_id, keywords, negative_keywords, job_titles, locations FROM users_perfil WHERE user_id = ? AND is_active = 1",
+                (target_uid,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT user_id, keywords, negative_keywords, job_titles, locations FROM users_perfil WHERE is_active = 1 LIMIT 1"
+            ).fetchone()
+        conn.close()
+
+        if row:
+            result['user_id'] = row['user_id']
+            if row['locations']:
+                result['locations'] = row['locations']
+            if row['keywords']:
+                result['keywords'] = [k.strip().lower() for k in row['keywords'].split(',') if k.strip()]
+            if row['negative_keywords']:
+                result['negative_keywords'] = [k.strip().lower() for k in row['negative_keywords'].split(',') if k.strip()]
+            if row['job_titles']:
+                result['job_titles'] = [k.strip().lower() for k in row['job_titles'].split(',') if k.strip()]
+
+            if any([result['keywords'], result['negative_keywords'], result['job_titles']]):
+                print(f"[profile_fetcher] Local profile loaded for '{result['user_id']}': "
+                      f"{len(result['keywords'])} keywords, "
+                      f"{len(result['negative_keywords'])} negative keywords, "
+                      f"{len(result['job_titles'])} job titles.")
+    except Exception as e:
+        print(f"[profile_fetcher] Could not read local users_perfil: {e}")
+    return result
+
+
+def _get_strategy():
+    return get_raw_profile().get('job_search_strategy', {})
+
 
 def get_user_id():
-    data = get_raw_profile()
-    return data.get('user_id', 'Unknown')
+    """Returns the active user_id: TARGET_USER_ID env var > API profile."""
+    target = os.environ.get('TARGET_USER_ID')
+    if target:
+        return target
+    return get_raw_profile().get('user_id', 'Unknown')
 
-def get_queries():
-    strategy = get_job_profile_v2()
-    return strategy.get('queries', [])
 
 def get_negative_keywords():
-    strategy = get_job_profile_v2()
-    filters = strategy.get('filters', {})
-    return [kw.lower() for kw in filters.get('negative_keywords', [])]
+    """Returns negative keywords. If TARGET_USER_ID is set, only uses local DB."""
+    target_uid = os.environ.get('TARGET_USER_ID')
+    if target_uid:
+        return get_local_profile(target_uid)['negative_keywords']
+        
+    api_negatives = [kw.lower() for kw in _get_strategy().get('filters', {}).get('negative_keywords', [])]
+    local_negatives = get_local_profile()['negative_keywords']
+    # Union without duplicates, preserving API list first
+    merged = list(dict.fromkeys(api_negatives + local_negatives))
+    return merged
 
-def generate_linkedin_urls():
-    queries = get_queries()
-    urls = {}
-    for q in queries:
-        loc = q.get('location', 'Worldwide')
-        # Extract a clean name for the dictionary key from the boolean string
-        # e.g. ("CTO" OR "Chief") -> CTO
-        clean_name = q.get('search_string', '').replace('(', '').replace('"', '').split(' OR ')[0] 
-        key = f"LinkedIn: {clean_name} - {loc}"
-        
-        q_role = urllib.parse.quote(q.get('search_string', ''))
-        q_loc = urllib.parse.quote(loc)
-        url = f"https://pt.linkedin.com/jobs/search?keywords={q_role}&location={q_loc}"
-        
-        if q.get('remote_only'):
-            url += "&f_WT=2" # LinkedIn filter for Remote
+
+def get_search_description():
+    """Returns the user's professional profile description (for TF-IDF scoring)."""
+    target_uid = os.environ.get('TARGET_USER_ID')
+    if target_uid:
+        local = get_local_profile(target_uid)
+        return " ".join(local['keywords'] + local['job_titles'])
+    return _get_strategy().get('search_description', '')
+
+
+def get_profile_filters():
+    """Returns the full filters dict (seniority_level, industries, company_stage, etc.)."""
+    target_uid = os.environ.get('TARGET_USER_ID')
+    if target_uid:
+        return {} # Local DB doesn't have these filters yet, avoid pulling API's default config
+    return _get_strategy().get('filters', {})
+
+
+def get_preferences():
+    return _get_strategy().get('preferences', {})
+
+
+def _get_all_queries():
+    """
+    Returns the list of search queries. 
+    If TARGET_USER_ID is set, it generates queries from the local DB profile.
+    Otherwise, it returns the standard queries from the API strategy.
+    """
+    target_uid = os.environ.get('TARGET_USER_ID')
+    if target_uid:
+        local = get_local_profile(target_uid)
+        if local['user_id']:
+            generated_queries = []
+            # Split comma-separated values
+            titles = local['job_titles'] # Already a list from get_local_profile
+            locations = [l.strip() for l in (local.get('locations') or "Portugal").split(',')]
+            is_remote = os.environ.get('REMOTE_ONLY', '0') == '1' # Or use local['is_remote'] if we add it to the select
+
+            for title in titles:
+                for loc in locations:
+                    generated_queries.append({
+                        'search_string': title,
+                        'location': loc,
+                        'is_priority': True, # Local targeted searches are always priority
+                        'remote_only': is_remote
+                    })
             
-        urls[key] = url
-    return urls
+            if generated_queries:
+                # print(f"[profile_fetcher] Generated {len(generated_queries)} local queries for {target_uid}")
+                return generated_queries
 
-def generate_indeed_urls():
-    queries = get_queries()
-    urls = {}
+    return _get_strategy().get('queries', [])
+
+
+def _deduplicate_queries(queries):
+    """
+    For remote_only queries: removes city-level entries when a country-level
+    entry already exists for the same role. Reduces ~102 → ~42 queries.
+    E.g. if 'Portugal' exists, removes 'Lisboa', 'Porto', 'Braga', 'Aveiro', 'Coimbra'.
+    """
+    # Build a set of (search_string, country) pairs that exist
+    country_level = set()
     for q in queries:
-        loc = q.get('location', 'Portugal')
-        clean_name = q.get('search_string', '').replace('(', '').replace('"', '').split(' OR ')[0] 
-        key = f"Indeed: {clean_name} - {loc}"
-        
-        q_role = urllib.parse.quote(q.get('search_string', ''))
-        q_loc = urllib.parse.quote(loc)
-        
-        # Indeed handles remote natively using the sc parameter
-        if q.get('remote_only'):
-             url = f"https://pt.indeed.com/jobs?q={q_role}&l={q_loc}&sc=0kf%3Aattr%28DSQF7%29%3B"
-        else:
-             url = f"https://pt.indeed.com/jobs?q={q_role}&l={q_loc}"
-             
-        urls[key] = url
-    return urls
+        loc = q.get('location', '')
+        if q.get('remote_only') and loc not in _CITY_TO_COUNTRY:
+            country_level.add((q.get('search_string', ''), loc))
 
-def generate_sapo_urls():
-    queries = get_queries()
-    urls = {}
+    deduped = []
     for q in queries:
-        loc = q.get('location', 'Portugal')
-        if loc not in ["Portugal", "Lisboa", "Porto", "Braga", "Aveiro", "Coimbra"]:
-            continue # Sapo is PT only, skip foreign queries
-            
-        clean_name = q.get('search_string', '').replace('(', '').replace('"', '').split(' OR ')[0] 
-        key = f"Sapo: {clean_name} - {loc}"
-        
-        q_role = urllib.parse.quote(q.get('search_string', ''))
-        q_loc = urllib.parse.quote(loc)
-        url = f"https://emprego.sapo.pt/offers?local={q_loc}&pesquisa={q_role}"
-        
-        urls[key] = url
-    return urls
+        role = q.get('search_string', '')
+        loc  = q.get('location', '')
 
-# For RSS feeds (Net-Empregos, Expresso) we need to extract raw titles to filter locally
+        # If this is a city and its country already has an entry → skip
+        if q.get('remote_only') and loc in _CITY_TO_COUNTRY:
+            parent_country = _CITY_TO_COUNTRY[loc]
+            if (role, parent_country) in country_level:
+                continue  # Redundant city-level query
+
+        deduped.append(q)
+    return deduped
+
+
+def get_queries(deduplicate=True):
+    """Returns all queries, optionally de-duplicated."""
+    queries = _get_all_queries()
+    if deduplicate:
+        before = len(queries)
+        queries = _deduplicate_queries(queries)
+        after = len(queries)
+        if before != after:
+            print(f"[profile_fetcher] De-duplicated: {before} → {after} queries (saved {before - after} redundant searches)")
+    return queries
+
+
+def get_priority_queries(deduplicate=True):
+    """Returns only is_priority=true queries."""
+    return [q for q in get_queries(deduplicate) if q.get('is_priority', False)]
+
+
+def get_standard_queries(deduplicate=True):
+    """Returns only is_priority=false queries."""
+    return [q for q in get_queries(deduplicate) if not q.get('is_priority', False)]
+
+
 def get_target_roles():
-    queries = get_queries()
+    """Extracts role keywords from all API queries + local users_perfil keywords.
+    Result is a deduplicated union of both sources."""
     roles = []
-    for q in queries:
-        # Simplistic parsing of boolean string ("CTO" OR "Chief Technology Officer")
-        # to extract acceptable keywords for RSS filters
+    # --- Source 1: API queries ---
+    for q in _get_all_queries():
         raw_string = q.get('search_string', '')
         parts = raw_string.replace('(', '').replace(')', '').split(' OR ')
         for p in parts:
-            clean = p.replace('"', '').strip()
+            clean = p.replace('"', '').strip().lower()
             if clean and clean not in roles:
                 roles.append(clean)
+
+    # --- Source 2: Local users_perfil (keywords + job_titles) ---
+    local = get_local_profile()
+    for kw in local['keywords'] + local['job_titles']:
+        if kw and kw not in roles:
+            roles.append(kw)
+
     return roles
+
+
+def strict_keyword_match(text, keywords):
+    """
+    Bulletproof keyword matching:
+    1. Ignores 1-2 letter keywords unless in whitelist (IT, UX, UI, HR...)
+       This prevents matching the Portuguese word "em" (in) when searching for "EM" (Engineering Manager).
+    2. Uses word boundary matching so "cto" doesn't match "director".
+    """
+    import re
+    whitelist = ['it', 'ux', 'ui', 'qa', 'hr', 'vp', 'ai', 'ml', 'bi', 'c#']
+    text_lower = text.lower()
+    
+    for kw in keywords:
+        kw_clean = kw.strip().lower()
+        if len(kw_clean) < 3 and kw_clean not in whitelist:
+            continue
+            
+        pattern = r'\b' + re.escape(kw_clean) + r'\b'
+        if re.search(pattern, text_lower):
+            return True
+            
+    return False
+
+# ─────────────────────────────────────────────────────────────────────────────
+# URL Generators
+# ─────────────────────────────────────────────────────────────────────────────
+def _clean_role_name(search_string):
+    return search_string.replace('(', '').replace('"', '').split(' OR ')[0].strip()
+
+
+def generate_linkedin_urls(priority_only=False, standard_only=False):
+    if priority_only:
+        queries = get_priority_queries()
+    elif standard_only:
+        queries = get_standard_queries()
+    else:
+        queries = get_queries()
+
+    urls = {}
+    for q in queries:
+        loc = q.get('location', 'Worldwide')
+        is_prio = q.get('is_priority', False)
+        clean_name = _clean_role_name(q.get('search_string', ''))
+        key = f"{'★ ' if is_prio else ''}LinkedIn: {clean_name} - {loc}"
+
+        q_role = urllib.parse.quote(q.get('search_string', ''))
+        q_loc  = urllib.parse.quote(loc)
+        url = f"https://pt.linkedin.com/jobs/search?keywords={q_role}&location={q_loc}&f_TPR=r86400"
+
+        if q.get('remote_only'):
+            url += "&f_WT=2"
+
+        urls[key] = {'url': url, 'is_priority': is_prio}
+    return urls
+
+
+def generate_indeed_urls(priority_only=False, standard_only=False):
+    if priority_only:
+        queries = get_priority_queries()
+    elif standard_only:
+        queries = get_standard_queries()
+    else:
+        queries = get_queries()
+
+    urls = {}
+    for q in queries:
+        loc = q.get('location', 'Portugal')
+        is_prio = q.get('is_priority', False)
+        clean_name = _clean_role_name(q.get('search_string', ''))
+        key = f"{'★ ' if is_prio else ''}Indeed: {clean_name} - {loc}"
+
+        q_role = urllib.parse.quote(q.get('search_string', ''))
+        q_loc  = urllib.parse.quote(loc)
+
+        if q.get('remote_only'):
+            url = f"https://pt.indeed.com/jobs?q={q_role}&l={q_loc}&sc=0kf%3Aattr%28DSQF7%29%3B&fromage=1"
+        else:
+            url = f"https://pt.indeed.com/jobs?q={q_role}&l={q_loc}&fromage=1"
+
+        urls[key] = {'url': url, 'is_priority': is_prio}
+    return urls
+
+
+def generate_sapo_urls():
+    """
+    Generates Sapo search URLs. Uses country-level (Portugal) instead of per-city
+    to reduce redundant searches (1 URL per role instead of 1 per role×city).
+    """
+    queries = get_queries()
+    urls = {}
+    seen_roles = set()
+
+    for q in queries:
+        loc = q.get('location', 'Portugal')
+        # Sapo is PT only — only process PT-related queries
+        if loc not in ["Portugal", "Lisboa", "Porto", "Braga", "Aveiro", "Coimbra"]:
+            continue
+
+        clean_name = _clean_role_name(q.get('search_string', ''))
+
+        # De-duplicate: one national search per role is enough for Sapo
+        if clean_name in seen_roles:
+            continue
+        seen_roles.add(clean_name)
+
+        q_role = urllib.parse.quote(q.get('search_string', ''))
+        key = f"Sapo: {clean_name} - Portugal"
+        url = f"https://emprego.sapo.pt/offers?local=Portugal&pesquisa={q_role}"
+        urls[key] = url
+
+    return urls
+
+def generate_net_empregos_urls():
+    queries = get_queries()
+    urls = {}
+    for q in queries:
+        loc = q.get('location', 'Portugal')
+        clean_name = _clean_role_name(q.get('search_string', ''))
+        
+        q_role = urllib.parse.quote(q.get('search_string', ''))
+        q_loc = urllib.parse.quote(loc if loc.lower() != 'portugal' else '')
+        
+        key = f"Net-Empregos: {clean_name} - {loc}"
+        url = f"https://www.net-empregos.com/pesquisa-empregos.asp?Chave={q_role}&cidade={q_loc}&categoria=0&zona=0&tipo=0"
+        urls[key] = url
+
+    return urls
+
+def generate_expresso_urls():
+    queries = get_queries()
+    urls = {}
+    for q in queries:
+        loc = q.get('location', 'Portugal')
+        clean_name = _clean_role_name(q.get('search_string', ''))
+        
+        q_role = urllib.parse.quote(q.get('search_string', ''))
+        q_loc = urllib.parse.quote(loc if loc.lower() != 'portugal' else '')
+        
+        key = f"Expresso: {clean_name} - {loc}"
+        url = f"https://expressoemprego.pt/pesquisa?K={q_role}&L={q_loc}"
+        urls[key] = url
+
+    return urls

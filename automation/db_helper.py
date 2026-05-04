@@ -21,8 +21,7 @@ def job_exists(link: str) -> bool:
             conn = _get_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT 1 FROM vagas WHERE link = ?', (link,))
-            exists = cursor.fetchone() is not None
-            return exists
+            return cursor.fetchone() is not None
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e).lower():
                 time.sleep(1 + random.uniform(0.1, 0.5))
@@ -35,8 +34,26 @@ def job_exists(link: str) -> bool:
     print(f"[DB ERROR] job_exists failed for link {link} after multiple retries (Database Locked).")
     return False
 
-def save_job(user_id: str, plataforma: str, id_externo: str, titulo: str, empresa: str, localizacao: str, link: str, data_pub: str = "Recent", categoria: str = "Unknown", descricao_completa: str = "", recrutador_nome: str = "", recrutador_link: str = "", observacoes: str = "") -> bool:
-    """Saves a new job to the database with safe retry logic (Schema v4)."""
+def save_job(
+    user_id: str,
+    plataforma: str,
+    id_externo: str,
+    titulo: str,
+    empresa: str,
+    localizacao: str,
+    link: str,
+    data_pub: str = "Recent",
+    categoria: str = "Unknown",
+    descricao_completa: str = "",
+    recrutador_nome: str = "",
+    recrutador_link: str = "",
+    observacoes: str = "",
+    # --- New fields (Schema v5) ---
+    salario: str = "",
+    tipo_contrato: str = "",
+    nivel_experiencia: str = "",
+) -> bool:
+    """Saves a new job to the database with safe retry logic (Schema v5)."""
     data_agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     tentativas = 5
     while tentativas > 0:
@@ -45,9 +62,21 @@ def save_job(user_id: str, plataforma: str, id_externo: str, titulo: str, empres
             conn = _get_connection()
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO vagas (user_id, plataforma, id_externo, titulo, empresa, localizacao, link, data_publicacao, data_scraped, categoria, descricao_completa, status, recrutador_nome, recrutador_link, observacoes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Ativa', ?, ?, ?)
-            ''', (user_id, plataforma, id_externo, titulo, empresa, localizacao, link, data_pub, data_agora, categoria, descricao_completa, recrutador_nome, recrutador_link, observacoes))
+                INSERT INTO vagas (
+                    user_id, plataforma, id_externo, titulo, empresa, localizacao,
+                    link, data_publicacao, data_scraped, categoria,
+                    descricao_completa, status,
+                    recrutador_nome, recrutador_link, observacoes,
+                    salario, tipo_contrato, nivel_experiencia
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Ativa', ?, ?, ?, ?, ?, ?)
+            ''', (
+                user_id, plataforma, id_externo, titulo, empresa, localizacao,
+                link, data_pub, data_agora, categoria,
+                descricao_completa,
+                recrutador_nome, recrutador_link, observacoes,
+                salario, tipo_contrato, nivel_experiencia,
+            ))
             conn.commit()
             return True
         except sqlite3.OperationalError as e:
@@ -57,8 +86,8 @@ def save_job(user_id: str, plataforma: str, id_externo: str, titulo: str, empres
             else:
                 raise e
         except sqlite3.IntegrityError:
-            # Job is already saved (caught by UNIQUE constraint on the schema)
-            return False 
+            # Job already exists (UNIQUE constraint on link / plataforma+id_externo)
+            return False
         finally:
             if conn:
                 conn.close()

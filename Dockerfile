@@ -4,13 +4,24 @@ FROM python:3.9-bookworm
 # Set the working directory
 WORKDIR /app
 
-# Install essential system dependencies (includes cron for auto-scheduling)
+# Install essential system dependencies (includes cron and Chrome libs)
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     unzip \
     curl \
     cron \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libxkbcommon0 \
+    libpango-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install stable Google Chrome from .deb
@@ -20,26 +31,21 @@ RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd6
     && rm google-chrome-stable_current_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
-# Install required Python libraries
-RUN pip install --no-cache-dir \
-    beautifulsoup4 \
-    requests \
-    selenium \
-    feedparser \
-    undetected-chromedriver \
-    streamlit \
-    pandas \
-    resend \
-    fastapi \
-    "uvicorn[standard]"
+# Copy requirements and install Python libraries
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Add crontab file
-# Orchestrator: every day at 08:00 and 20:00 (UTC)
-# Email:        every day at 13:15 (UTC) -> 13:15 UTC = 14:15 Portugal (Winter)
-# Cleanup:      every Sunday at 03:00 (UTC)
 COPY config/crontab /etc/cron.d/scraper_cron
 RUN chmod 0644 /etc/cron.d/scraper_cron \
     && crontab /etc/cron.d/scraper_cron
 
-# Default command will be overridden by docker-compose
+# Prepare entrypoint
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Entrypoint handles DB init/migrations
+ENTRYPOINT ["docker-entrypoint.sh"]
+
+# Default command
 CMD ["python"]

@@ -9,3 +9,7 @@
 
 # Weekly Cleaning: every Sunday at 03:00 UTC
 0 3 * * 0 root cd /app && /usr/local/bin/python /app/automation/clean_jobs.py >> /app/logs/scraper.log 2>&1
+
+# Daily Job Verifier: every day at 21:00 UTC (mark expired jobs)
+0 21 * * * root cd /app && /usr/local/bin/python /app/automation/job_verifier.py >> /app/logs/verifier.log 2>&1
+
