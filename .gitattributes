@@ -1,0 +1,7 @@
+# Force LF line endings on shell scripts and Linux config files.
+# Without this, Windows clones with autocrlf=true corrupt them and break
+# Docker builds (cron expects LF, dash scripts break on \r).
+*.sh        text eol=lf
+config/crontab text eol=lf
+docker-entrypoint.sh text eol=lf
+Dockerfile  text eol=lf
