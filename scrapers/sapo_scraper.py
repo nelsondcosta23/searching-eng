@@ -1,7 +1,4 @@
 import sqlite3
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import os
 import time
@@ -33,19 +30,14 @@ except ImportError:
     }
     USER_ID = "Unknown"
 
+from scrapers._shared import make_session, DEFAULT_HEADERS
+
 PLATAFORMA = "Sapo Jobs"
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))  # 0 = unlimited
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept-Language': 'pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-}
-
-# Optimized HTTP Session with retry logic
-session = requests.Session()
-retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
-session.mount('https://', HTTPAdapter(max_retries=retries))
+HEADERS = DEFAULT_HEADERS
+session = make_session(retries=3)
 
 def get_chrome_major_version():
     """Detects the installed Chrome major version to match ChromeDriver."""

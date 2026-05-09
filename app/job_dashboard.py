@@ -2,8 +2,28 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import os
+import psutil
 
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
+LOCK_FILE = os.path.join(os.path.dirname(DB_PATH), 'orchestrator.lock')
+
+def is_job_running():
+    """Checks if any scraper or orchestrator is running locally or via lock file."""
+    # 1. Check shared lock file (Global, works for Cron too)
+    if os.path.exists(LOCK_FILE):
+        return True
+    
+    # 2. Check local processes (Manual runs from UI)
+    try:
+        scripts = ["orchestrator.py", "scraper.py", "job_verifier.py"]
+        for proc in psutil.process_iter(['cmdline']):
+            cmdline = proc.info.get('cmdline')
+            if cmdline:
+                if any(s in " ".join(cmdline) for s in scripts):
+                    return True
+    except:
+        pass
+    return False
 
 st.set_page_config(
     page_title="Job Search Dashboard",
@@ -152,12 +172,10 @@ def run_in_terminal(cmd_list, env_vars=None, title="A executar...", post_cmd_lis
         post_process.wait()
 
     st.success("Operação concluída com sucesso!")
-    if st.button("Fechar e Atualizar o Dashboard", type="primary"):
+    if st.button("Fechar e Atualizar o Dashboard", type="primary", use_container_width=True):
         st.cache_data.clear()
-        # Fallback to javascript reload to ensure dialog closes completely
-        js = "<script>window.parent.location.reload();</script>"
-        st.components.v1.html(js, height=0)
-        st.rerun()
+        st.query_params.clear()
+        st.switch_page("app/job_dashboard.py")
 
 with st.sidebar:
     st.header("⚡ Ações Rápidas")
@@ -346,6 +364,10 @@ else:
     else:
         # --- 1. Top Section Placeholders (Title & Metrics) ---
         top_container = st.container()
+        
+        # --- Alerta de Jobs em Background ---
+        if is_job_running():
+            st.warning("⚙️ **Jobs Running!** O sistema está a processar novas vagas em background.")
         
         # --- 2. Filters Row (Placed above the table) ---
         st.write("") # Spacer

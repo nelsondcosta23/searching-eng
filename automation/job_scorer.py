@@ -16,8 +16,13 @@ from collections import Counter
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from automation.profile_fetcher import get_search_description, get_profile_filters, get_target_roles, get_user_id
+from automation.db_helper import transaction
 
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
+
+# Commit every N rows during scoring. Keeps WAL small and lets readers run
+# between batches (instead of starving them for the whole scoring run).
+_SCORER_BATCH_SIZE = int(os.environ.get('SCORER_BATCH_SIZE', '200'))
 
 # Portuguese and English stopwords to ignore in scoring
 _STOPWORDS = {
@@ -116,6 +121,10 @@ def score_and_update_unscored_jobs():
     """
     Finds all jobs with NULL relevance_score, computes their score and saves it.
     Called at the end of each orchestration run.
+
+    Reads the candidate list once, then writes scores in batches of
+    `_SCORER_BATCH_SIZE` so readers (API/dashboard/webhook) aren't starved
+    for the full scoring run. Each batch is its own retried transaction.
     """
     if not os.path.exists(DB_PATH):
         print("[scorer] Database not found. Skipping scoring.")
@@ -126,11 +135,8 @@ def score_and_update_unscored_jobs():
     profile_terms = _build_profile_terms()
     print(f"[scorer] Profile terms loaded: {len(profile_terms)} unique weighted terms.")
 
-    conn = sqlite3.connect(DB_PATH, timeout=20)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.row_factory = sqlite3.Row
-
-    try:
+    # Phase 1: read candidates (short-lived read connection)
+    with transaction(row_factory=sqlite3.Row) as conn:
         rows = conn.execute("""
             SELECT id, titulo, empresa,
                    COALESCE(descricao_completa, '') AS descricao_completa,
@@ -139,31 +145,42 @@ def score_and_update_unscored_jobs():
             WHERE relevance_score IS NULL AND user_id = ?
         """, (user_id,)).fetchall()
 
-        if not rows:
-            print("[scorer] No unscored jobs found. All up to date.")
-            return
+    if not rows:
+        print("[scorer] No unscored jobs found. All up to date.")
+        return
 
-        print(f"[scorer] Scoring {len(rows)} unscored jobs...")
-        scored = 0
+    print(f"[scorer] Scoring {len(rows)} unscored jobs (batch={_SCORER_BATCH_SIZE})...")
 
-        for row in rows:
-            score = _score_job(
-                titulo=row['titulo'] or '',
-                empresa=row['empresa'] or '',
-                descricao=row['descricao_completa'],
-                observacoes=row['observacoes'],
-                profile_terms=profile_terms,
-            )
-            conn.execute(
-                "UPDATE vagas SET relevance_score = ? WHERE id = ?",
-                (score, row['id'])
-            )
-            scored += 1
+    # Phase 2: compute scores in memory first (CPU-only, no DB lock held)
+    scored_pairs = []
+    for row in rows:
+        score = _score_job(
+            titulo=row['titulo'] or '',
+            empresa=row['empresa'] or '',
+            descricao=row['descricao_completa'],
+            observacoes=row['observacoes'],
+            profile_terms=profile_terms,
+        )
+        scored_pairs.append((score, row['id']))
 
-        conn.commit()
-        print(f"[scorer] ✅ Scored {scored} jobs successfully.")
+    # Phase 3: write in batches with retry
+    total_written = 0
+    for i in range(0, len(scored_pairs), _SCORER_BATCH_SIZE):
+        batch = scored_pairs[i:i + _SCORER_BATCH_SIZE]
+        try:
+            with transaction() as conn:
+                conn.executemany(
+                    "UPDATE vagas SET relevance_score = ? WHERE id = ?",
+                    batch,
+                )
+            total_written += len(batch)
+        except Exception as e:
+            print(f"[scorer] ⚠ Batch {i // _SCORER_BATCH_SIZE + 1} failed: {e}. Continuing...")
 
-        # Show top 5 matches
+    print(f"[scorer] ✅ Scored {total_written}/{len(rows)} jobs successfully.")
+
+    # Phase 4: show top 5 matches (separate short read)
+    with transaction(row_factory=sqlite3.Row) as conn:
         top = conn.execute("""
             SELECT titulo, empresa, plataforma, relevance_score
             FROM vagas
@@ -172,28 +189,27 @@ def score_and_update_unscored_jobs():
             LIMIT 5
         """, (user_id,)).fetchall()
 
-        if top:
-            print("\n[scorer] 🏆 Top 5 most relevant jobs in DB:")
-            for i, job in enumerate(top, 1):
-                print(f"  {i}. [{job['relevance_score']:3d}] {job['titulo']} @ {job['empresa']} ({job['plataforma']})")
-
-    finally:
-        conn.close()
+    if top:
+        print("\n[scorer] 🏆 Top 5 most relevant jobs in DB:")
+        for i, job in enumerate(top, 1):
+            print(f"  {i}. [{job['relevance_score']:3d}] {job['titulo']} @ {job['empresa']} ({job['plataforma']})")
 
 
 def rescore_all_jobs():
-    """Force-rescores ALL jobs in the database (useful after profile update)."""
+    """Force-rescores ALL jobs in the database (useful after profile update).
+
+    Atomically nullifies all scores then re-scores. If re-scoring fails the
+    nullification still stands — but the next regular scorer run will pick up
+    NULL rows and rescore them, so we never lose data permanently.
+    """
     if not os.path.exists(DB_PATH):
         print("[scorer] Database not found.")
         return
 
     user_id = get_user_id()
     print(f"[scorer] Force-rescoring ALL jobs for user: {user_id}...")
-    conn = sqlite3.connect(DB_PATH, timeout=20)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("UPDATE vagas SET relevance_score = NULL WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+    with transaction() as conn:
+        conn.execute("UPDATE vagas SET relevance_score = NULL WHERE user_id = ?", (user_id,))
 
     score_and_update_unscored_jobs()
 

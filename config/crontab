@@ -13,3 +13,8 @@
 # Daily Job Verifier: every day at 21:00 UTC (mark expired jobs)
 0 21 * * * root cd /app && /usr/local/bin/python /app/automation/job_verifier.py >> /app/logs/verifier.log 2>&1
 
+# Weekly SQLite backup: every Sunday at 02:30 UTC (30 min before cleanup).
+# Uses sqlite3.backup() via Python — concurrent-safe with WAL writers.
+# Keeps last 8 weekly snapshots in /app/database/backups/.
+30 2 * * 0 root cd /app && /usr/local/bin/python /app/automation/backup_db.py >> /app/logs/scraper.log 2>&1
+

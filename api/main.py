@@ -5,49 +5,157 @@ from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import os
 import json
-from datetime import datetime
-from typing import Optional, List
+import hmac
+import socket
+import ipaddress
+from urllib.parse import urlparse
+from datetime import datetime, timedelta
+from typing import Optional, List, Tuple
 from pydantic import BaseModel
+
+
+def _day_range(date_str: str) -> Tuple[str, str]:
+    """Returns (start_of_day, start_of_next_day) as 'YYYY-MM-DD HH:MM:SS' strings.
+
+    Used to convert `DATE(col) = ?` into a sargable `col >= ? AND col < ?`
+    range so the index on data_scraped is actually used by the planner.
+    """
+    d = datetime.strptime(date_str, '%Y-%m-%d')
+    return (d.strftime('%Y-%m-%d %H:%M:%S'), (d + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S'))
 
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 API_KEY  = os.environ.get('API_KEY', 'changeme-please')
+
+# Optional per-user authorization scope. If set, /users/sync only allows
+# modifying this exact user_id. Without it, any holder of API_KEY can write
+# any user's profile (legacy behavior).
+OWNER_USER_ID = os.environ.get('OWNER_USER_ID', '').strip()
+
+# Allow http (non-https) callback URLs only when explicitly enabled.
+ALLOW_HTTP_CALLBACKS = os.environ.get('ALLOW_HTTP_CALLBACKS', '0') == '1'
+CALLBACK_URL_MAX_LEN = 2048
 
 app = FastAPI(
     title="Job Search Results API",
     description=(
         "Access scraped job results per user_id.\n\n"
         "Populated automatically by the scraper engine (Expresso, Sapo, Net-Empregos, Indeed, LinkedIn).\n\n"
-        "**Auth**: Send `Authorization: Bearer <API_KEY>` header or `?api_key=<API_KEY>` query param."
+        "**Auth**: Send `Authorization: Bearer <API_KEY>` header (preferred) or `?api_key=<API_KEY>` query param (deprecated — leaks into access logs)."
     ),
-    version="2.0.0",
+    version="2.1.0",
 )
 
 # CORS — allow external apps (React dashboards, N8N, Zapier, etc.)
+# allow_credentials must be False with allow_origins=["*"] — the spec rejects
+# the combination and browsers strip credentials. The API uses Bearer auth in
+# the Authorization header which works fine in this mode.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Validators (security)
+# ─────────────────────────────────────────────────────────────────────────────
+def _validate_callback_url(url: Optional[str]) -> Optional[str]:
+    """Validates that callback_url is safe to POST to (anti-SSRF).
+
+    Rejects:
+      - Non-http(s) schemes
+      - http:// (unless ALLOW_HTTP_CALLBACKS=1)
+      - URLs longer than CALLBACK_URL_MAX_LEN
+      - Hostnames that resolve to private/loopback/link-local/multicast IPs
+      - Cloud metadata IP (169.254.169.254 — AWS/GCP/Azure)
+    Raises HTTPException(400) on invalid input.
+    """
+    if not url:
+        return url
+    if len(url) > CALLBACK_URL_MAX_LEN:
+        raise HTTPException(status_code=400, detail=f"callback_url too long (max {CALLBACK_URL_MAX_LEN} chars).")
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        raise HTTPException(status_code=400, detail="callback_url must use http or https scheme.")
+    if parsed.scheme == 'http' and not ALLOW_HTTP_CALLBACKS:
+        raise HTTPException(status_code=400, detail="callback_url must use https. Set ALLOW_HTTP_CALLBACKS=1 to permit http.")
+
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(status_code=400, detail="callback_url has no hostname.")
+
+    # Resolve hostname to all IPs and reject any that target internal infra.
+    try:
+        addrs = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        raise HTTPException(status_code=400, detail=f"callback_url hostname could not be resolved: {host}")
+
+    for af, _socktype, _proto, _canon, sockaddr in addrs:
+        try:
+            ip_obj = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            continue
+        if (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local      # also covers 169.254.0.0/16 (cloud metadata)
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"callback_url resolves to a non-public IP ({ip_obj}); rejected to prevent SSRF.",
+            )
+
+    return url
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Auth
 # ─────────────────────────────────────────────────────────────────────────────
 security = HTTPBearer(auto_error=False)
 
+
+def _safe_compare(provided: str, expected: str) -> bool:
+    """Constant-time API key comparison to defeat timing attacks."""
+    if not provided or not expected:
+        return False
+    try:
+        return hmac.compare_digest(provided.encode('utf-8'), expected.encode('utf-8'))
+    except Exception:
+        return False
+
+
+def _mask_key(key: str) -> str:
+    """Returns the last 4 chars for logging — never logs the full key."""
+    if not key or len(key) < 8:
+        return '***'
+    return f"...{key[-4:]}"
+
+
 def verify_api_key(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
 ):
-    if credentials and credentials.credentials == API_KEY:
+    # Prefer the Authorization: Bearer header
+    if credentials and _safe_compare(credentials.credentials, API_KEY):
         return credentials.credentials
+    # Legacy fallback: ?api_key=...  (kept for backwards compatibility but
+    # strongly discouraged because the key ends up in access logs / Referer.)
     key_from_query = request.query_params.get('api_key')
-    if key_from_query == API_KEY:
+    if key_from_query and _safe_compare(key_from_query, API_KEY):
+        try:
+            print(f"[API] DEPRECATED: api_key passed via query string from {request.client.host if request.client else '?'} (key={_mask_key(key_from_query)}). Use the Authorization header instead.")
+        except Exception:
+            pass
         return key_from_query
     raise HTTPException(
         status_code=401,
-        detail="Invalid or missing API key. Send via 'Authorization: Bearer <key>' header or '?api_key=<key>'.",
+        detail="Invalid or missing API key. Send via 'Authorization: Bearer <key>' header (preferred) or '?api_key=<key>'.",
     )
 
 
@@ -175,8 +283,10 @@ def get_jobs_from_db(
     params: list = [user_id]
 
     if run_date:
-        query += " AND DATE(data_scraped) = ?"
-        params.append(run_date)
+        # Sargable range — lets idx_vagas_user_scraped narrow the date band.
+        day_start, day_end = _day_range(run_date)
+        query += " AND data_scraped >= ? AND data_scraped < ?"
+        params.extend([day_start, day_end])
     if status:
         query += " AND status = ?"
         params.append(status)
@@ -329,12 +439,15 @@ def get_stats(
         raise HTTPException(status_code=503, detail="Database not found.")
 
     conn = _get_conn()
-    today = datetime.now().strftime('%Y-%m-%d')
+    today_start, today_end = _day_range(datetime.now().strftime('%Y-%m-%d'))
 
     total      = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=?", (user_id,)).fetchone()[0]
     active     = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=? AND status='Ativa'", (user_id,)).fetchone()[0]
     expired    = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=? AND status='Expirada'", (user_id,)).fetchone()[0]
-    today_cnt  = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=? AND DATE(data_scraped)=?", (user_id, today)).fetchone()[0]
+    today_cnt  = conn.execute(
+        "SELECT COUNT(*) FROM vagas WHERE user_id=? AND data_scraped >= ? AND data_scraped < ?",
+        (user_id, today_start, today_end),
+    ).fetchone()[0]
     by_plat    = conn.execute("SELECT plataforma, COUNT(*) FROM vagas WHERE user_id=? GROUP BY plataforma", (user_id,)).fetchall()
 
     conn.close()
@@ -351,52 +464,65 @@ def get_stats(
 
 @app.post("/api/v1/users/sync", tags=["Users"])
 def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_key)):
-    """Upsert user scraping profile preferences."""
+    """Upsert user scraping profile preferences.
+
+    If `OWNER_USER_ID` env is set, only that exact user_id may be modified.
+    `callback_url` is validated for SSRF (anti-pivot to internal services).
+    """
     if not _db_exists():
         raise HTTPException(status_code=503, detail="Database not found.")
-        
-    conn = _get_conn()
-    cursor = conn.cursor()
-    
+
+    # Per-user authorization (opt-in via OWNER_USER_ID env var).
+    if OWNER_USER_ID and profile.user_id != OWNER_USER_ID:
+        raise HTTPException(
+            status_code=403,
+            detail=f"This API key may only modify user_id={OWNER_USER_ID}.",
+        )
+
+    # SSRF: ensure callback_url cannot pivot the dispatcher into internal infra.
+    profile.callback_url = _validate_callback_url(profile.callback_url)
+
     # Convert lists to comma-separated strings for SQLite
     job_titles_str = ", ".join(profile.job_titles) if profile.job_titles else ""
     locations_str = ", ".join(profile.locations) if profile.locations else ""
     exp_levels_str = ", ".join(profile.experience_levels) if profile.experience_levels else ""
     keywords_str = ", ".join(profile.keywords) if profile.keywords else ""
     negative_keywords_str = ", ".join(profile.negative_keywords) if profile.negative_keywords else ""
-    
+
+    upsert_sql = '''
+        INSERT INTO users_perfil (user_id, is_active, job_titles, locations, is_remote, min_salary, experience_levels, keywords, negative_keywords, callback_url, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+            is_active=excluded.is_active,
+            job_titles=excluded.job_titles,
+            locations=excluded.locations,
+            is_remote=excluded.is_remote,
+            min_salary=excluded.min_salary,
+            experience_levels=excluded.experience_levels,
+            keywords=excluded.keywords,
+            negative_keywords=excluded.negative_keywords,
+            callback_url=excluded.callback_url,
+            updated_at=CURRENT_TIMESTAMP
+    '''
+    params = (
+        profile.user_id,
+        1 if profile.is_active else 0,
+        job_titles_str,
+        locations_str,
+        1 if profile.is_remote else 0,
+        profile.min_salary,
+        exp_levels_str,
+        keywords_str,
+        negative_keywords_str,
+        profile.callback_url,
+    )
+
     try:
-        cursor.execute('''
-            INSERT INTO users_perfil (user_id, is_active, job_titles, locations, is_remote, min_salary, experience_levels, keywords, negative_keywords, callback_url, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT(user_id) DO UPDATE SET
-                is_active=excluded.is_active,
-                job_titles=excluded.job_titles,
-                locations=excluded.locations,
-                is_remote=excluded.is_remote,
-                min_salary=excluded.min_salary,
-                experience_levels=excluded.experience_levels,
-                keywords=excluded.keywords,
-                negative_keywords=excluded.negative_keywords,
-                callback_url=excluded.callback_url,
-                updated_at=CURRENT_TIMESTAMP
-        ''', (
-            profile.user_id, 
-            1 if profile.is_active else 0, 
-            job_titles_str, 
-            locations_str, 
-            1 if profile.is_remote else 0, 
-            profile.min_salary, 
-            exp_levels_str,
-            keywords_str,
-            negative_keywords_str,
-            profile.callback_url,
-        ))
-        conn.commit()
+        # Routed through db_helper so the UPSERT retries on `database is locked`
+        # under contention (scrapers/scorer running concurrently).
+        from automation.db_helper import execute_with_retry as _db_exec
+        _db_exec(upsert_sql, params)
     except Exception as e:
-        conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
-        
+
     return {"status": "success", "message": f"Profile for {profile.user_id} updated successfully."}

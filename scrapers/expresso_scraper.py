@@ -22,6 +22,7 @@ except ImportError:
     USER_ID = "Unknown"
 
 from automation.db_helper import save_job, job_exists
+from scrapers._shared import negative_keyword_match
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from bs4 import BeautifulSoup
@@ -204,7 +205,7 @@ def iniciar_scraper_expresso():
                     if not strict_keyword_match(texto_busca, KEYWORDS):
                         continue
 
-                    if NEGATIVE_KEYWORDS and any(nkw in texto_busca for nkw in NEGATIVE_KEYWORDS):
+                    if negative_keyword_match(texto_busca, NEGATIVE_KEYWORDS):
                         continue
 
                     if not job_exists(link):

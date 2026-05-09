@@ -2,15 +2,101 @@ import sqlite3
 import os
 import time
 import random
+import contextlib
 from datetime import datetime
 
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
+
+# Default retry settings for transient `database is locked` errors. SQLite's
+# 20s busy timeout (set in _get_connection) handles waits during statement
+# execution; these retries cover commit-time conflicts in WAL mode.
+_DEFAULT_RETRIES = 5
+_BACKOFF_BASE = 1.0  # seconds
+
 
 def _get_connection():
     """Returns a new SQLite connection with WAL mode enabled and a 20s timeout."""
     conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.execute('PRAGMA journal_mode=WAL;')
     return conn
+
+
+def _is_locked_error(err: Exception) -> bool:
+    return isinstance(err, sqlite3.OperationalError) and 'database is locked' in str(err).lower()
+
+
+@contextlib.contextmanager
+def transaction(max_attempts: int = _DEFAULT_RETRIES, row_factory=None):
+    """Yields a SQLite connection inside a transaction.
+
+    Commits on clean exit, with retry on `database is locked`. Rolls back on
+    exception. Connection is always closed. Use for multi-statement writes
+    where you need to control statement boundaries.
+
+    Example:
+        with transaction() as conn:
+            conn.execute("UPDATE vagas SET ...")
+            conn.execute("UPDATE users_perfil SET ...")
+    """
+    conn = _get_connection()
+    if row_factory is not None:
+        conn.row_factory = row_factory
+    try:
+        try:
+            yield conn
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+
+        last_err = None
+        for attempt in range(max_attempts):
+            try:
+                conn.commit()
+                return
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if _is_locked_error(e) and attempt < max_attempts - 1:
+                    time.sleep(_BACKOFF_BASE + random.uniform(0.1, 0.5))
+                    continue
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+        if last_err:
+            raise last_err
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def execute_with_retry(sql: str, params: tuple = (), max_attempts: int = _DEFAULT_RETRIES) -> int:
+    """One-shot UPDATE/INSERT/DELETE with retry on `database is locked`.
+
+    Returns the affected rowcount. The statement is committed automatically.
+    For multi-statement transactions use `transaction()` instead.
+    """
+    for attempt in range(max_attempts):
+        conn = None
+        try:
+            conn = _get_connection()
+            cur = conn.execute(sql, params)
+            conn.commit()
+            return cur.rowcount
+        except sqlite3.OperationalError as e:
+            if _is_locked_error(e) and attempt < max_attempts - 1:
+                time.sleep(_BACKOFF_BASE + random.uniform(0.1, 0.5))
+                continue
+            raise
+        finally:
+            if conn:
+                conn.close()
+    return -1  # unreachable
 
 def job_exists(link: str) -> bool:
     """Checks if a job link is already in the database."""

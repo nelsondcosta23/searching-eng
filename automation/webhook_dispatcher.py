@@ -17,14 +17,29 @@ Payload format:
 
 import sqlite3
 import os
+import sys
 import json
+import time
 import urllib.request
 import urllib.error
-from datetime import datetime
+from datetime import datetime, timedelta
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from automation.db_helper import execute_with_retry
 
 DB_PATH   = os.environ.get('DB_PATH', '/app/database/vagas.db')
 MAX_JOBS  = int(os.environ.get('WEBHOOK_MAX_JOBS', '5'))
 WEBHOOK_SECRET = os.environ.get('EXTERNAL_WEBHOOK_SECRET', '')
+WEBHOOK_RETRIES = int(os.environ.get('WEBHOOK_RETRIES', '3'))
+WEBHOOK_TIMEOUT = int(os.environ.get('WEBHOOK_TIMEOUT', '15'))
+
+
+def _day_range(date_str: str) -> tuple:
+    """Returns (start_of_day, start_of_next_day) as 'YYYY-MM-DD HH:MM:SS' strings.
+    Sargable replacement for `DATE(col) = ?` so idx_vagas_user_scraped is used.
+    """
+    d = datetime.strptime(date_str, '%Y-%m-%d')
+    return (d.strftime('%Y-%m-%d %H:%M:%S'), (d + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S'))
 
 BANNER = "=" * 55
 
@@ -48,7 +63,7 @@ def get_active_users_with_callback():
 
 def get_todays_top_jobs(user_id: str, limit: int = 5):
     """Returns the top N most relevant jobs scraped today for a given user."""
-    today = datetime.now().strftime('%Y-%m-%d')
+    today_start, today_end = _day_range(datetime.now().strftime('%Y-%m-%d'))
     conn = get_conn()
     rows = conn.execute(
         """
@@ -61,29 +76,37 @@ def get_todays_top_jobs(user_id: str, limit: int = 5):
         FROM vagas
         WHERE user_id = ?
           AND status = 'Ativa'
-          AND DATE(data_scraped) = ?
+          AND data_scraped >= ?
+          AND data_scraped < ?
         ORDER BY COALESCE(relevance_score, 0) DESC, data_scraped DESC
         LIMIT ?
         """,
-        (user_id, today, limit),
+        (user_id, today_start, today_end, limit),
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
 
 def mark_webhook_sent(user_id: str):
-    """Updates the last_webhook_sent timestamp for the user."""
-    conn = get_conn()
-    conn.execute(
-        "UPDATE users_perfil SET last_webhook_sent = CURRENT_TIMESTAMP WHERE user_id = ?",
-        (user_id,),
-    )
-    conn.commit()
-    conn.close()
+    """Updates the last_webhook_sent timestamp for the user (retries on locked DB)."""
+    try:
+        execute_with_retry(
+            "UPDATE users_perfil SET last_webhook_sent = CURRENT_TIMESTAMP WHERE user_id = ?",
+            (user_id,),
+        )
+    except Exception as e:
+        # Don't fail the dispatcher run on a marker UPDATE failure — the next
+        # cron tick will potentially re-send, which is preferable to a crash.
+        print(f"  ⚠ Could not mark webhook_sent for {user_id[:8]}...: {e}")
 
 
 def send_webhook(user_id: str, callback_url: str, jobs: list) -> bool:
-    """Sends the jobs payload to the callback URL via HTTP POST."""
+    """Sends the jobs payload to the callback URL via HTTP POST.
+
+    Retries up to WEBHOOK_RETRIES times with exponential backoff (1s, 4s, 16s)
+    on transient failures (5xx, network/timeout). Does NOT retry on 4xx since
+    they indicate a permanent client problem (bad URL, auth, payload).
+    """
     payload = {
         "event": "new_jobs_found",
         "user_id": user_id,
@@ -92,32 +115,39 @@ def send_webhook(user_id: str, callback_url: str, jobs: list) -> bool:
         "jobs": jobs,
     }
     data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+    print(f"  📦 Payload size: {len(data) // 1024} KB")
 
-    req = urllib.request.Request(
-        callback_url,
-        data=data,
-        headers={
-            "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "SearchingEng-WebhookDispatcher/1.0",
-            "X-Webhook-Secret": WEBHOOK_SECRET,
-        },
-        method="POST",
-    )
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "User-Agent": "SearchingEng-WebhookDispatcher/1.0",
+        "X-Webhook-Secret": WEBHOOK_SECRET,
+    }
 
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            status = resp.status
-            print(f"  ✅ Webhook sent → HTTP {status}")
-            return True
-    except urllib.error.HTTPError as e:
-        print(f"  ❌ HTTP Error {e.code}: {e.reason}")
-        return False
-    except urllib.error.URLError as e:
-        print(f"  ❌ URL Error: {e.reason}")
-        return False
-    except Exception as e:
-        print(f"  ❌ Unexpected error: {e}")
-        return False
+    attempts = max(1, WEBHOOK_RETRIES)
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(callback_url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=WEBHOOK_TIMEOUT) as resp:
+                print(f"  ✅ Webhook sent → HTTP {resp.status} (attempt {attempt}/{attempts})")
+                return True
+        except urllib.error.HTTPError as e:
+            # Don't retry on 4xx — they signal a permanent client problem.
+            if 400 <= e.code < 500:
+                print(f"  ❌ HTTP {e.code} {e.reason} — not retrying (4xx is permanent)")
+                return False
+            print(f"  ⚠ HTTP {e.code} {e.reason} on attempt {attempt}/{attempts}")
+        except urllib.error.URLError as e:
+            print(f"  ⚠ URL Error: {e.reason} on attempt {attempt}/{attempts}")
+        except Exception as e:
+            print(f"  ⚠ Unexpected error: {e} on attempt {attempt}/{attempts}")
+
+        if attempt < attempts:
+            backoff = 4 ** (attempt - 1)  # 1s, 4s, 16s, 64s, ...
+            print(f"  ⏳ Backing off {backoff}s before retry...")
+            time.sleep(backoff)
+
+    print(f"  ❌ Webhook failed after {attempts} attempt(s).")
+    return False
 
 
 def main():

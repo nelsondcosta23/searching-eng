@@ -20,17 +20,22 @@ PLATAFORMA = 'Indeed PT (Selenium)'
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from automation.profile_fetcher import generate_indeed_urls, strict_keyword_match, get_user_id, get_target_roles
+    from automation.profile_fetcher import generate_indeed_urls, strict_keyword_match, get_user_id, get_target_roles, get_negative_keywords
     from automation.db_helper import save_job, job_exists
     PESQUISAS = generate_indeed_urls()
     USER_ID = get_user_id()
     KEYWORDS = get_target_roles()
+    NEGATIVE_KEYWORDS = get_negative_keywords()
 except ImportError:
     print("Warning: Could not load profile_fetcher. Using default search.")
     PESQUISAS = {
         'IT - Python - Portugal': 'https://pt.indeed.com/jobs?q=python&l=Portugal'
     }
     USER_ID = "Unknown"
+    KEYWORDS = []
+    NEGATIVE_KEYWORDS = []
+
+from scrapers._shared import negative_keyword_match
 
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))   # 0 = unlimited
 MAX_PAGES = int(os.environ.get('INDEED_MAX_PAGES', '3'))        # Pages per search (10 results/page)
@@ -241,6 +246,11 @@ def processar_uma_pesquisa(driver, categoria_nome, url_info, vagas_ja_inseridas=
                     if not strict_keyword_match(titulo, KEYWORDS):
                         continue
 
+                    blocked_kw = negative_keyword_match(titulo, NEGATIVE_KEYWORDS)
+                    if blocked_kw:
+                        print(f"  [BLOCKED] '{titulo}' contains a negative keyword ({blocked_kw}).")
+                        continue
+
                     link_relativo = link_tag.get('href', '')
                     link_absoluto = link_relativo if link_relativo.startswith('http') else f"https://pt.indeed.com{link_relativo}"
 
@@ -285,7 +295,7 @@ def processar_uma_pesquisa(driver, categoria_nome, url_info, vagas_ja_inseridas=
                             print(f"    ✅ Saved: {titulo} @ {empresa} [{total_agora} total]")
                             if MAX_JOBS > 0 and total_agora >= MAX_JOBS:
                                 print(f"  [LIMIT REACHED] Max {MAX_JOBS} jobs. Stopping.")
-                                return novas_vagas_cont
+                                return novas_vagas_cont, driver
                 except Exception:
                     continue
 
@@ -310,7 +320,7 @@ def processar_uma_pesquisa(driver, categoria_nome, url_info, vagas_ja_inseridas=
             break
 
     print(f"  → Finished '{categoria_nome}': {novas_vagas_cont} new jobs indexed.")
-    return novas_vagas_cont
+    return novas_vagas_cont, driver
 
 def iniciar_scraper_indeed():
     print(f"\n{'='*50}")
@@ -324,7 +334,9 @@ def iniciar_scraper_indeed():
 
         total_novas = 0
         for cat_nome, cat_url in PESQUISAS.items():
-            novas = processar_uma_pesquisa(driver, cat_nome, cat_url, total_novas)
+            # processar_uma_pesquisa may restart the driver on Chrome crash;
+            # re-bind here so subsequent searches use the new instance.
+            novas, driver = processar_uma_pesquisa(driver, cat_nome, cat_url, total_novas)
             total_novas += novas
             if MAX_JOBS > 0 and total_novas >= MAX_JOBS:
                 print(f"[GLOBAL LIMIT REACHED] Stopping Indeed multi-search.")

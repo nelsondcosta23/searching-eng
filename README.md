@@ -6,7 +6,7 @@
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B.svg)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57.svg)
 
-An advanced, fully-automated system designed to scrape, aggregate, verify, and serve job listings from various Portuguese and international job boards (LinkedIn, Indeed, Sapo, Expresso, Net-Empregos). 
+An advanced, fully-automated system designed to scrape, aggregate, verify, and serve job listings from various Portuguese and international job boards (LinkedIn, Indeed, Sapo, Expresso, Net-Empregos, ITJobs).
 
 The platform operates autonomously via a 00:00 Cronjob, stores data locally in a thread-safe SQLite database, provides a beautiful **Streamlit dashboard** for manual filtering, and exposes a **FastAPI REST Endpoint** protected by an API Key for external software integration.
 
@@ -14,7 +14,7 @@ The platform operates autonomously via a 00:00 Cronjob, stores data locally in a
 
 ## ✨ Key Features
 
-- **🤖 Automated Scraper Engine**: Supports both Static (Sapo, Expresso, Net-Empregos via RSS/HTML) and Dynamic sites (LinkedIn, Indeed via Undetected ChromeDriver & Selenium).
+- **🤖 Automated Scraper Engine**: Supports Static (Sapo, Expresso, Net-Empregos via RSS/HTML), API-based (ITJobs official JSON API) and Dynamic sites (LinkedIn, Indeed via Undetected ChromeDriver & Selenium).
 - **🧠 Dynamic Intelligence (Local + Sync)**: The system manages scraping strategies (roles, locations, keywords) via a local database, syncable with external software via API.
 - **🌐 REST API Service**: Exposes scraped jobs securely on port `8080`. External applications can query jobs and sync user profiles.
 - **🔔 Webhook Push**: Automatically pushes the top 5 most relevant jobs found today directly to your external software's callback URL.

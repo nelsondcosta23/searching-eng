@@ -1,4 +1,5 @@
 import sqlite3
+import sys
 import requests
 import time
 import random
@@ -7,12 +8,18 @@ from datetime import datetime
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from automation.db_helper import execute_with_retry, transaction
+
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 
 # --- Configuração via variáveis de ambiente (.env) ---
 VERIFIER_MAX_JOBS    = int(os.environ.get('VERIFIER_MAX_JOBS', '0'))      # 0 = sem limite
 VERIFIER_PAGE_TIMEOUT = int(os.environ.get('VERIFIER_PAGE_TIMEOUT', '15')) # segundos
 VERIFIER_SLEEP_BETWEEN = float(os.environ.get('VERIFIER_SLEEP_BETWEEN', '2')) # segundos entre verificações
+# Skip jobs verified within the last N days (default 2). Drastically reduces work
+# on subsequent runs. Set to 0 to force re-verify everything.
+VERIFIER_SKIP_RECENT_DAYS = int(os.environ.get('VERIFIER_SKIP_RECENT_DAYS', '2'))
 
 # Session Configuration with Retries
 session = requests.Session()
@@ -33,13 +40,35 @@ def verify_active_jobs():
         print(f"Database not found at {DB_PATH}. Ensure the db exists before verifying.")
         return
 
-    conn = sqlite3.connect(DB_PATH, timeout=20)
-    conn.execute('PRAGMA journal_mode=WAL;')
-    cursor = conn.cursor()
+    # Read job list with a SHORT-LIVED connection then close it. The previous
+    # design held a single write connection open across HTTP+Selenium probes
+    # (potentially hours), starving readers and bloating the WAL. (Audit #25.)
+    with transaction() as _conn:
+        # Select jobs marked as Active. Skip ones that were re-verified recently —
+        # they were already alive in the last VERIFIER_SKIP_RECENT_DAYS, no point
+        # hammering Selenium again. (Uses idx_vagas_status_verif COVERING index.)
+        if VERIFIER_SKIP_RECENT_DAYS > 0:
+            cutoff_clause = "AND (data_ultima_verificacao IS NULL OR data_ultima_verificacao < datetime('now', ?))"
+            _cur = _conn.execute(
+                f"SELECT id, link, plataforma, titulo FROM vagas WHERE status = 'Ativa' {cutoff_clause}",
+                (f'-{VERIFIER_SKIP_RECENT_DAYS} days',),
+            )
+        else:
+            _cur = _conn.execute("SELECT id, link, plataforma, titulo FROM vagas WHERE status = 'Ativa'")
+        jobs = _cur.fetchall()
+    # _conn is closed here — every UPDATE below uses execute_with_retry().
 
-    # Select jobs marked as Active
-    cursor.execute("SELECT id, link, plataforma, titulo FROM vagas WHERE status = 'Ativa'")
-    jobs = cursor.fetchall()
+    def _mark_expired(job_id, ts):
+        execute_with_retry(
+            "UPDATE vagas SET status = 'Expirada', data_ultima_verificacao = ? WHERE id = ?",
+            (ts, job_id),
+        )
+
+    def _mark_verified(job_id, ts):
+        execute_with_retry(
+            "UPDATE vagas SET data_ultima_verificacao = ? WHERE id = ?",
+            (ts, job_id),
+        )
 
     # Apply max jobs limit if configured
     if VERIFIER_MAX_JOBS > 0:
@@ -84,12 +113,10 @@ def verify_active_jobs():
             
             if job_expired:
                 print(f"  [EXPIRED] {title[:40]}... ({platform})")
-                cursor.execute("UPDATE vagas SET status = 'Expirada', data_ultima_verificacao = ? WHERE id = ?", (now_date, job_id))
+                _mark_expired(job_id, now_date)
                 expired_count += 1
             else:
-                cursor.execute("UPDATE vagas SET data_ultima_verificacao = ? WHERE id = ?", (now_date, job_id))
-
-            conn.commit()
+                _mark_verified(job_id, now_date)
         except Exception as e:
             print(f"Error processing {job_id}: {e}")
             continue
@@ -150,21 +177,16 @@ def verify_active_jobs():
                             
                     if job_expired:
                         print(f"  [EXPIRED] {title[:40]}... ({platform})")
-                        cursor.execute("UPDATE vagas SET status = 'Expirada', data_ultima_verificacao = ? WHERE id = ?", (now_date, job_id))
+                        _mark_expired(job_id, now_date)
                         expired_count += 1
                     else:
-                        cursor.execute("UPDATE vagas SET data_ultima_verificacao = ? WHERE id = ?", (now_date, job_id))
-                        
-                    conn.commit()
+                        _mark_verified(job_id, now_date)
                 except Exception as e:
                     print(f"Error processing {job_id}: {e}")
                     continue
         finally:
             if driver:
                 driver.quit()
-
-    conn.commit()
-    conn.close()
 
     print(f"\nVerification finished!")
     print(f"- Total processed: {verified_count}")

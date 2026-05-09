@@ -131,55 +131,67 @@ def run_webhook_dispatcher():
     subprocess.run([sys.executable, dispatcher_path], cwd=BASE_DIR)
 
 
+LOCK_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'orchestrator.lock')
+
 def main():
-    t_start = datetime.now()
+    # Create lock file
+    with open(LOCK_FILE, 'w') as f:
+        f.write(str(os.getpid()))
 
-    # Count expected searches for info
     try:
-        sys.path.insert(0, BASE_DIR)
-        from automation.profile_fetcher import generate_linkedin_urls, generate_sapo_urls, get_priority_queries, get_standard_queries
-        li_urls    = generate_linkedin_urls()
-        prio_count = sum(1 for v in li_urls.values() if v.get('is_priority'))
-        std_count  = sum(1 for v in li_urls.values() if not v.get('is_priority'))
-        sapo_count = len(generate_sapo_urls())
-    except Exception:
-        prio_count = std_count = sapo_count = '?'
+        t_start = datetime.now()
 
-    print(f"\n{'#'*60}")
-    print(f"# SCRAPER ORCHESTRATOR — Pro Edition")
-    print(f"# Start: {t_start.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"# LinkedIn: {prio_count} priority (4p) + {std_count} standard (2p)")
-    print(f"# Sapo: {sapo_count} national searches")
-    print(f"{'#'*60}")
+        # Count expected searches for info
+        try:
+            sys.path.insert(0, BASE_DIR)
+            from automation.profile_fetcher import generate_linkedin_urls, generate_sapo_urls
+            li_urls    = generate_linkedin_urls()
+            prio_count = sum(1 for v in li_urls.values() if v.get('is_priority'))
+            std_count  = sum(1 for v in li_urls.values() if not v.get('is_priority'))
+            sapo_count = len(generate_sapo_urls())
+        except Exception:
+            prio_count = std_count = sapo_count = '?'
 
-    # ── Phase 1: Fast RSS scrapers in parallel ──────────────────────────────
-    results_parallel = run_parallel(SCRAPERS_PARALLEL)
+        print(f"\n{'#'*60}")
+        print(f"# SCRAPER ORCHESTRATOR — Pro Edition")
+        print(f"# Start: {t_start.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"# LinkedIn: {prio_count} priority (4p) + {std_count} standard (2p)")
+        print(f"# Sapo: {sapo_count} national searches")
+        print(f"{'#'*60}")
 
-    # ── Phase 2: Selenium scrapers sequentially ─────────────────────────────
-    results_sequential = run_sequential(SCRAPERS_SEQUENTIAL)
+        # ── Phase 1: Fast RSS scrapers in parallel ──────────────────────────────
+        results_parallel = run_parallel(SCRAPERS_PARALLEL)
 
-    # ── Phase 3: Relevance Scoring ──────────────────────────────────────────
-    run_scorer()
+        # ── Phase 2: Selenium scrapers sequentially ─────────────────────────────
+        results_sequential = run_sequential(SCRAPERS_SEQUENTIAL)
 
-    # ── Phase 4: Expired Link Verification ─────────────────────────────────
-    run_verifier()
+        # ── Phase 3: Relevance Scoring ──────────────────────────────────────────
+        run_scorer()
 
-    # ── Phase 5: Webhook — Push results to external software ────────────────
-    run_webhook_dispatcher()
+        # ── Phase 4: Expired Link Verification ─────────────────────────────────
+        run_verifier()
 
-    # ── Final Summary ────────────────────────────────────────────────────────
-    all_results = {**results_parallel, **results_sequential}
-    t_end = datetime.now()
-    elapsed = t_end - t_start
-    mins, secs = divmod(elapsed.seconds, 60)
+        # ── Phase 5: Webhook — Push results to external software ────────────────
+        run_webhook_dispatcher()
 
-    print(f"\n{'#'*60}")
-    print(f"# FINAL SUMMARY — Duration: {mins}m {secs}s")
-    print(f"{'#'*60}")
-    for scraper_name, info in all_results.items():
-        icon = "✅" if info['success'] else "❌"
-        print(f"  {icon} {scraper_name:25s} ({info['duration']}s)")
-    print(f"\n[DONE] Finished at: {t_end.strftime('%H:%M:%S')}")
+        # ── Final Summary ────────────────────────────────────────────────────────
+        all_results = {**results_parallel, **results_sequential}
+        t_end = datetime.now()
+        elapsed = t_end - t_start
+        mins, secs = divmod(elapsed.seconds, 60)
+
+        print(f"\n{'#'*60}")
+        print(f"# FINAL SUMMARY — Duration: {mins}m {secs}s")
+        print(f"{'#'*60}")
+        for scraper_name, info in all_results.items():
+            icon = "✅" if info['success'] else "❌"
+            print(f"  {icon} {scraper_name:25s} ({info['duration']}s)")
+        print(f"\n[DONE] Finished at: {t_end.strftime('%H:%M:%S')}")
+
+    finally:
+        # Remove lock file
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
 
 
 if __name__ == '__main__':

@@ -97,6 +97,27 @@ try:
     # Create high-performance indexes for scrapers
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_active ON users_perfil(is_active)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_active_remote ON users_perfil(is_active, is_remote)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_active_created ON users_perfil(is_active, created_at)')
+
+    # Hot-path indexes on `vagas` (Phase B — perf optimization, audit 2026-05-09)
+    print("Creating performance indexes on 'vagas'...")
+    vagas_indexes = [
+        # Covers: API list/stats by user, webhook today's jobs, ORDER BY data_scraped DESC
+        ('idx_vagas_user_scraped',    'CREATE INDEX IF NOT EXISTS idx_vagas_user_scraped ON vagas(user_id, data_scraped DESC)'),
+        # Covers: API status filter, stats grouping by status, verifier "Ativa" lookups scoped per user
+        ('idx_vagas_user_status',     'CREATE INDEX IF NOT EXISTS idx_vagas_user_status ON vagas(user_id, status)'),
+        # Partial index — only covers unscored rows; small footprint, dramatic scorer speedup
+        ('idx_vagas_relevance_null',  'CREATE INDEX IF NOT EXISTS idx_vagas_relevance_null ON vagas(user_id) WHERE relevance_score IS NULL'),
+        # Covers: verifier with the "skip recently-verified" filter (Phase C)
+        ('idx_vagas_status_verif',    'CREATE INDEX IF NOT EXISTS idx_vagas_status_verif ON vagas(status, data_ultima_verificacao)'),
+        # Covers: weekly cleanup `WHERE data_scraped < ?`
+        ('idx_vagas_data_scraped',    'CREATE INDEX IF NOT EXISTS idx_vagas_data_scraped ON vagas(data_scraped)'),
+        # Covers: API platform LIKE filter (helps when narrowed by user_id first via composite above)
+        ('idx_vagas_plataforma',      'CREATE INDEX IF NOT EXISTS idx_vagas_plataforma ON vagas(plataforma)'),
+    ]
+    for name, sql in vagas_indexes:
+        cursor.execute(sql)
+        print(f"  ✓  {name}")
 
     conn.commit()
     print("User profile schema successfully initialized!")

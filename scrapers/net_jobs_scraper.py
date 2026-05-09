@@ -1,7 +1,4 @@
 import sqlite3
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import os
 import sys
@@ -26,16 +23,12 @@ except ImportError:
     NEGATIVE_KEYWORDS = []
     USER_ID = "Unknown"
 
+from scrapers._shared import negative_keyword_match, make_session, DEFAULT_HEADERS
+
 from automation.db_helper import save_job, job_exists
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept-Language': 'pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-}
-
-session = requests.Session()
-retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
-session.mount('https://', HTTPAdapter(max_retries=retries))
+HEADERS = DEFAULT_HEADERS
+session = make_session(retries=3)
 
 def keyword_matches(text, keywords):
     for kw in keywords:
@@ -66,8 +59,7 @@ def extrair_detalhes_net(link):
         )
         if desc_block:
             detalhes['descricao_completa'] = desc_block.get_text(separator='\n', strip=True)
-        else:
-            detalhes['descricao_completa'] = "Could not extract full description via HTML."
+        # else: leave empty so it doesn't pollute TF-IDF scoring
 
         obs_list = []
         bloco_info = (
@@ -150,8 +142,9 @@ def iniciar_scraper_net_empregos():
                 if not strict_keyword_match(texto_busca, KEYWORDS):
                     continue
 
-                if NEGATIVE_KEYWORDS and any(nkw in texto_busca for nkw in NEGATIVE_KEYWORDS):
-                    print(f"  [BLOCKED] '{titulo}' contains a negative keyword.")
+                blocked_kw = negative_keyword_match(texto_busca, NEGATIVE_KEYWORDS)
+                if blocked_kw:
+                    print(f"  [BLOCKED] '{titulo}' contains a negative keyword ({blocked_kw}).")
                     continue
 
                 if job_exists(link):

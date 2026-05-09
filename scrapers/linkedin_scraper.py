@@ -19,17 +19,22 @@ PLATAFORMA = 'LinkedIn PT (Selenium)'
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from automation.profile_fetcher import generate_linkedin_urls, strict_keyword_match, get_user_id, get_target_roles
+    from automation.profile_fetcher import generate_linkedin_urls, strict_keyword_match, get_user_id, get_target_roles, get_negative_keywords
     from automation.db_helper import save_job, job_exists
     PESQUISAS = generate_linkedin_urls()   # dict: key → {url, is_priority}
     USER_ID = get_user_id()
     KEYWORDS = get_target_roles()
+    NEGATIVE_KEYWORDS = get_negative_keywords()
 except ImportError:
     print("Warning: Could not load profile_fetcher. Using default search.")
     PESQUISAS = {
         'IT - Python - Portugal': {'url': 'https://pt.linkedin.com/jobs/search?keywords=python&location=Portugal', 'is_priority': True}
     }
     USER_ID = "Unknown"
+    KEYWORDS = []
+    NEGATIVE_KEYWORDS = []
+
+from scrapers._shared import negative_keyword_match
 
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))
 PRIORITY_PAGES   = int(os.environ.get('LINKEDIN_PRIORITY_PAGES', '4'))   # pages for priority queries
@@ -340,6 +345,15 @@ def processar_uma_pesquisa(cat_nome: str, url_info: dict, driver, vagas_ja_inser
 
         for job in jobs_on_page:
             if job_exists(job['link']):
+                continue
+
+            # Apply keyword filters BEFORE deep extraction to save Selenium budget.
+            titulo = job.get('titulo', '') or ''
+            if KEYWORDS and not strict_keyword_match(titulo, KEYWORDS):
+                continue
+            blocked_kw = negative_keyword_match(titulo, NEGATIVE_KEYWORDS)
+            if blocked_kw:
+                print(f"    [BLOCKED] '{titulo}' contains a negative keyword ({blocked_kw}).")
                 continue
 
             # Try HTTP deep extraction first (faster), fallback to Selenium

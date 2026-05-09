@@ -136,12 +136,50 @@ def _get_strategy():
     return get_raw_profile().get('job_search_strategy', {})
 
 
+def _api_strategy_is_empty() -> bool:
+    """True when the upstream Supabase profile is unavailable or empty.
+
+    Used to trigger a local-DB fallback consistently across getters when the
+    Edge Function is down (e.g. returning 404). Without this, the API path
+    returned silently empty data while the local users_perfil table held
+    valid info.
+    """
+    s = _get_strategy()
+    if not s:
+        return True
+    queries = s.get('queries') or []
+    return len(queries) == 0
+
+
+def _build_local_queries(local: dict) -> list[dict]:
+    """Generates queries from a local users_perfil row dict."""
+    titles = local.get('job_titles') or []
+    locations = [l.strip() for l in (local.get('locations') or "Portugal").split(',') if l.strip()]
+    if not locations:
+        locations = ["Portugal"]
+    is_remote = os.environ.get('REMOTE_ONLY', '0') == '1'
+    return [
+        {
+            'search_string': title,
+            'location': loc,
+            'is_priority': True,
+            'remote_only': is_remote,
+        }
+        for title in titles for loc in locations
+    ]
+
+
 def get_user_id():
-    """Returns the active user_id: TARGET_USER_ID env var > API profile."""
+    """Returns the active user_id: TARGET_USER_ID env var > API profile > local active user."""
     target = os.environ.get('TARGET_USER_ID')
     if target:
         return target
-    return get_raw_profile().get('user_id', 'Unknown')
+    api_uid = get_raw_profile().get('user_id')
+    if api_uid:
+        return api_uid
+    # Final fallback: first active local user (when API is down).
+    local_uid = get_local_profile().get('user_id')
+    return local_uid or 'Unknown'
 
 
 def get_negative_keywords():
@@ -149,7 +187,7 @@ def get_negative_keywords():
     target_uid = os.environ.get('TARGET_USER_ID')
     if target_uid:
         return get_local_profile(target_uid)['negative_keywords']
-        
+
     api_negatives = [kw.lower() for kw in _get_strategy().get('filters', {}).get('negative_keywords', [])]
     local_negatives = get_local_profile()['negative_keywords']
     # Union without duplicates, preserving API list first
@@ -158,12 +196,20 @@ def get_negative_keywords():
 
 
 def get_search_description():
-    """Returns the user's professional profile description (for TF-IDF scoring)."""
+    """Returns the user's professional profile description (for TF-IDF scoring).
+
+    Priority: TARGET_USER_ID env > API search_description > local users_perfil.
+    """
     target_uid = os.environ.get('TARGET_USER_ID')
     if target_uid:
         local = get_local_profile(target_uid)
         return " ".join(local['keywords'] + local['job_titles'])
-    return _get_strategy().get('search_description', '')
+    api_desc = _get_strategy().get('search_description', '')
+    if api_desc:
+        return api_desc
+    # Fallback: synthesize from local profile when API is unavailable.
+    local = get_local_profile()
+    return " ".join(local['keywords'] + local['job_titles'])
 
 
 def get_profile_filters():
@@ -180,34 +226,34 @@ def get_preferences():
 
 def _get_all_queries():
     """
-    Returns the list of search queries. 
-    If TARGET_USER_ID is set, it generates queries from the local DB profile.
-    Otherwise, it returns the standard queries from the API strategy.
+    Returns the list of search queries.
+
+    Priority:
+      1. TARGET_USER_ID env  → generated from local users_perfil for that uid.
+      2. API strategy queries → if upstream Supabase has them.
+      3. Local fallback     → first active users_perfil row (when API is down).
     """
     target_uid = os.environ.get('TARGET_USER_ID')
     if target_uid:
         local = get_local_profile(target_uid)
         if local['user_id']:
-            generated_queries = []
-            # Split comma-separated values
-            titles = local['job_titles'] # Already a list from get_local_profile
-            locations = [l.strip() for l in (local.get('locations') or "Portugal").split(',')]
-            is_remote = os.environ.get('REMOTE_ONLY', '0') == '1' # Or use local['is_remote'] if we add it to the select
+            generated = _build_local_queries(local)
+            if generated:
+                return generated
 
-            for title in titles:
-                for loc in locations:
-                    generated_queries.append({
-                        'search_string': title,
-                        'location': loc,
-                        'is_priority': True, # Local targeted searches are always priority
-                        'remote_only': is_remote
-                    })
-            
-            if generated_queries:
-                # print(f"[profile_fetcher] Generated {len(generated_queries)} local queries for {target_uid}")
-                return generated_queries
+    api_queries = _get_strategy().get('queries', [])
+    if api_queries:
+        return api_queries
 
-    return _get_strategy().get('queries', [])
+    # Final fallback: API is empty/down → use first active local user.
+    local = get_local_profile()
+    if local['user_id']:
+        generated = _build_local_queries(local)
+        if generated:
+            print(f"[profile_fetcher] API empty/down — using local fallback for user {local['user_id']}")
+            return generated
+
+    return []
 
 
 def _deduplicate_queries(queries):
