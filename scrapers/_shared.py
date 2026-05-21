@@ -55,6 +55,64 @@ DEFAULT_HEADERS = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Seniority extraction (from title, falling back to first 500 chars of desc)
+# ─────────────────────────────────────────────────────────────────────────────
+_SENIORITY_MAP = [
+    # Most specific / senior first so they short-circuit before generic ones
+    (re.compile(r'\b(cto|ceo|coo|cpo|ciso|chief\s+\w+\s+officer)\b', re.I),  'C-Level'),
+    (re.compile(r'\b(vp|vice.?president)\b', re.I),                           'VP'),
+    (re.compile(r'\b(director|head\s+of)\b', re.I),                           'Director'),
+    (re.compile(r'\b(staff\s+engineer|principal\s+engineer|principal)\b', re.I), 'Staff / Principal'),
+    (re.compile(r'\b(engineering\s+manager|tech(?:nical)?\s+manager)\b', re.I), 'Manager'),
+    (re.compile(r'\b(tech(?:nical)?\s+lead|team\s+lead|lead\s+\w+)\b', re.I), 'Lead'),
+    (re.compile(r'\b(senior|sénior|sr\.?)\b', re.I),                          'Sénior'),
+    (re.compile(r'\b(mid.?level|pleno|middle)\b', re.I),                      'Mid-Level'),
+    (re.compile(r'\b(junior|júnior|jr\.?|entry.?level|associate)\b', re.I),   'Júnior'),
+]
+
+
+def extract_seniority(titulo: str, descricao: str = '') -> str:
+    """Infer seniority level from job title (primary) then description (fallback).
+
+    Returns a normalised label like 'Sénior', 'Lead', 'Júnior', etc., or ''
+    when nothing can be inferred.
+    """
+    for pattern, label in _SENIORITY_MAP:
+        if pattern.search(titulo or ''):
+            return label
+    for pattern, label in _SENIORITY_MAP:
+        if pattern.search((descricao or '')[:500]):
+            return label
+    return ''
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Salary extraction from free text (descriptions)
+# ─────────────────────────────────────────────────────────────────────────────
+_SALARY_RE = re.compile(
+    r'(?:'
+    # Symbol+amount+k  must come before plain symbol+amount to avoid truncation
+    r'[\$€£]\s*\d+[kK]'                                              # €50k / $120k
+    r'|\d+[kK]\s*[\$€£]'                                             # 50k€
+    r'|\d{2,3}\s*[kK]\s*(?:EUR|USD|GBP|por\s+ano|anuais|gross|/year|per\s+year)'  # 80k EUR
+    r'|[\$€£]\s*\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?'              # €50,000 / €50.000,00
+    r'|\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?\s*[\$€£]'              # 50.000€
+    r')',
+    re.I,
+)
+
+
+def extract_salary_from_text(text: str) -> str:
+    """Return the first salary-looking pattern found in the first 1 000 chars of text,
+    or '' if none found.
+    """
+    if not text:
+        return ''
+    m = _SALARY_RE.search(text[:1000])
+    return m.group(0).strip() if m else ''
+
+
 def make_session(
     *,
     retries: int = 3,

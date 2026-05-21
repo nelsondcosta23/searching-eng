@@ -77,7 +77,7 @@ def get_raw_profile():
                 _PROFILE_CACHE = json.load(f)
                 print(f"[profile_fetcher] API failed. Using expired file cache.")
                 return _PROFILE_CACHE
-        except:
+        except Exception:
             pass
 
     return {}
@@ -100,14 +100,15 @@ def get_local_profile(user_id=None):
         conn = sqlite3.connect(_DB_PATH, timeout=5)
         conn.row_factory = sqlite3.Row
 
+        _cols = "user_id, keywords, negative_keywords, job_titles, locations, is_remote, min_salary, experience_levels"
         if target_uid:
             row = conn.execute(
-                "SELECT user_id, keywords, negative_keywords, job_titles, locations FROM users_perfil WHERE user_id = ? AND is_active = 1",
+                f"SELECT {_cols} FROM users_perfil WHERE user_id = ? AND is_active = 1",
                 (target_uid,)
             ).fetchone()
         else:
             row = conn.execute(
-                "SELECT user_id, keywords, negative_keywords, job_titles, locations FROM users_perfil WHERE is_active = 1 LIMIT 1"
+                f"SELECT {_cols} FROM users_perfil WHERE is_active = 1 LIMIT 1"
             ).fetchone()
         conn.close()
 
@@ -121,6 +122,16 @@ def get_local_profile(user_id=None):
                 result['negative_keywords'] = [k.strip().lower() for k in row['negative_keywords'].split(',') if k.strip()]
             if row['job_titles']:
                 result['job_titles'] = [k.strip().lower() for k in row['job_titles'].split(',') if k.strip()]
+
+            # Extended fields (may not exist in older schema rows)
+            try:
+                result['is_remote']         = bool(row['is_remote'])
+                result['min_salary']        = int(row['min_salary']) if row['min_salary'] else 0
+                result['experience_levels'] = [e.strip() for e in (row['experience_levels'] or '').split(',') if e.strip()]
+            except Exception:
+                result['is_remote']         = False
+                result['min_salary']        = 0
+                result['experience_levels'] = []
 
             if any([result['keywords'], result['negative_keywords'], result['job_titles']]):
                 print(f"[profile_fetcher] Local profile loaded for '{result['user_id']}': "
@@ -152,21 +163,54 @@ def _api_strategy_is_empty() -> bool:
 
 
 def _build_local_queries(local: dict) -> list[dict]:
-    """Generates queries from a local users_perfil row dict."""
-    titles = local.get('job_titles') or []
+    """Generates queries from a local users_perfil row dict.
+
+    Produces two sets:
+    1. Priority queries  — each job_title × each location (original behaviour)
+    2. Enriched queries  — top 2 job_titles × top 3 keywords (standard priority)
+       These find niche matches like "CTO AI Portugal" or "Head of Technology SaaS"
+       that pure title searches miss.
+    """
+    titles    = local.get('job_titles') or []
+    keywords  = local.get('keywords')   or []
     locations = [l.strip() for l in (local.get('locations') or "Portugal").split(',') if l.strip()]
     if not locations:
         locations = ["Portugal"]
-    is_remote = os.environ.get('REMOTE_ONLY', '0') == '1'
-    return [
-        {
-            'search_string': title,
-            'location': loc,
-            'is_priority': True,
-            'remote_only': is_remote,
-        }
-        for title in titles for loc in locations
-    ]
+
+    # Read is_remote from profile, fallback to REMOTE_ONLY env var
+    is_remote = bool(local.get('is_remote')) or (os.environ.get('REMOTE_ONLY', '0') == '1')
+
+    queries = []
+
+    # --- Base queries: job_title × location (priority) ---
+    for title in titles:
+        for loc in locations:
+            queries.append({
+                'search_string': title,
+                'location':      loc,
+                'is_priority':   True,
+                'remote_only':   is_remote,
+            })
+
+    # --- Enriched queries: short job_title + keyword (standard priority) ---
+    # Only combine the top 2 shortest job_titles (avoid "Chief Technology Officer AI"
+    # which is too long to match anything), with the top 3 most useful keywords.
+    short_titles = sorted(titles, key=len)[:2]   # CTO, Tech Lead
+    useful_kw    = [kw for kw in keywords[:4]
+                    if len(kw) <= 20 and kw.lower() not in ('bitrix24',)][:3]  # skip brand names
+
+    for title in short_titles:
+        for kw in useful_kw:
+            combo = f"{title} {kw}"
+            for loc in locations:
+                queries.append({
+                    'search_string': combo,
+                    'location':      loc,
+                    'is_priority':   False,
+                    'remote_only':   is_remote,
+                })
+
+    return queries
 
 
 def get_user_id():
@@ -216,8 +260,29 @@ def get_profile_filters():
     """Returns the full filters dict (seniority_level, industries, company_stage, etc.)."""
     target_uid = os.environ.get('TARGET_USER_ID')
     if target_uid:
-        return {} # Local DB doesn't have these filters yet, avoid pulling API's default config
-    return _get_strategy().get('filters', {})
+        local = get_local_profile(target_uid)
+        filters = {}
+        if local.get('experience_levels'):
+            filters['seniority_level'] = local['experience_levels']
+        if local.get('min_salary'):
+            filters['min_salary'] = local['min_salary']
+        return filters
+
+    api_filters = _get_strategy().get('filters', {})
+
+    # Merge local experience_levels when API doesn't provide seniority
+    if not api_filters.get('seniority_level'):
+        local = get_local_profile()
+        if local.get('experience_levels'):
+            api_filters = dict(api_filters)
+            api_filters['seniority_level'] = local['experience_levels']
+    if not api_filters.get('min_salary'):
+        local = get_local_profile()
+        if local.get('min_salary'):
+            api_filters = dict(api_filters)
+            api_filters['min_salary'] = local['min_salary']
+
+    return api_filters
 
 
 def get_preferences():
@@ -306,22 +371,41 @@ def get_standard_queries(deduplicate=True):
     return [q for q in get_queries(deduplicate) if not q.get('is_priority', False)]
 
 
-def get_target_roles():
-    """Extracts role keywords from all API queries + local users_perfil keywords.
-    Result is a deduplicated union of both sources."""
-    roles = []
-    # --- Source 1: API queries ---
+def get_job_titles():
+    """Returns ONLY job title names used for scraper title-level filtering.
+    Intentionally excludes general keywords (cloud, automation, saas, etc.)
+    to avoid false positives — e.g. 'Software Engineer' should NOT pass
+    a filter targeting 'CTO' / 'Tech Lead' just because its description
+    mentions 'technology' or 'product'.
+
+    Sources: API query search_strings + local users_perfil.job_titles only.
+    """
+    titles = []
     for q in _get_all_queries():
         raw_string = q.get('search_string', '')
         parts = raw_string.replace('(', '').replace(')', '').split(' OR ')
         for p in parts:
             clean = p.replace('"', '').strip().lower()
-            if clean and clean not in roles:
-                roles.append(clean)
+            if clean and clean not in titles:
+                titles.append(clean)
 
-    # --- Source 2: Local users_perfil (keywords + job_titles) ---
     local = get_local_profile()
-    for kw in local['keywords'] + local['job_titles']:
+    for title in local['job_titles']:
+        if title and title not in titles:
+            titles.append(title)
+
+    return titles
+
+
+def get_target_roles():
+    """Extracts role keywords from all API queries + local users_perfil keywords.
+    Result is a deduplicated union of both sources.
+    NOTE: used by the scorer only — for scraper title filtering use get_job_titles()."""
+    roles = list(get_job_titles())
+
+    # --- Extra: Local users_perfil general keywords (for scorer context) ---
+    local = get_local_profile()
+    for kw in local['keywords']:
         if kw and kw not in roles:
             roles.append(kw)
 
@@ -414,10 +498,14 @@ def generate_sapo_urls():
     """
     Generates Sapo search URLs. Uses country-level (Portugal) instead of per-city
     to reduce redundant searches (1 URL per role instead of 1 per role×city).
+    When is_remote=1 in the user profile, also generates remote-specific searches.
     """
     queries = get_queries()
+    local   = get_local_profile()
+    is_remote = local.get('is_remote', False)
     urls = {}
-    seen_roles = set()
+    seen_roles  = set()
+    seen_remote = set()
 
     for q in queries:
         loc = q.get('location', 'Portugal')
@@ -426,32 +514,19 @@ def generate_sapo_urls():
             continue
 
         clean_name = _clean_role_name(q.get('search_string', ''))
-
-        # De-duplicate: one national search per role is enough for Sapo
-        if clean_name in seen_roles:
-            continue
-        seen_roles.add(clean_name)
-
         q_role = urllib.parse.quote(q.get('search_string', ''))
-        key = f"Sapo: {clean_name} - Portugal"
-        url = f"https://emprego.sapo.pt/offers?local=Portugal&pesquisa={q_role}"
-        urls[key] = url
 
-    return urls
+        # National search (one per role)
+        if clean_name not in seen_roles:
+            seen_roles.add(clean_name)
+            key = f"Sapo: {clean_name} - Portugal"
+            urls[key] = f"https://emprego.sapo.pt/offers?local=Portugal&pesquisa={q_role}"
 
-def generate_net_empregos_urls():
-    queries = get_queries()
-    urls = {}
-    for q in queries:
-        loc = q.get('location', 'Portugal')
-        clean_name = _clean_role_name(q.get('search_string', ''))
-        
-        q_role = urllib.parse.quote(q.get('search_string', ''))
-        q_loc = urllib.parse.quote(loc if loc.lower() != 'portugal' else '')
-        
-        key = f"Net-Empregos: {clean_name} - {loc}"
-        url = f"https://www.net-empregos.com/pesquisa-empregos.asp?Chave={q_role}&cidade={q_loc}&categoria=0&zona=0&tipo=0"
-        urls[key] = url
+        # Remote-specific search (one per role, when is_remote=1)
+        if is_remote and clean_name not in seen_remote:
+            seen_remote.add(clean_name)
+            key_r = f"Sapo: {clean_name} - Remoto"
+            urls[key_r] = f"https://emprego.sapo.pt/offers?local=Portugal&pesquisa={q_role}&remote_work=1"
 
     return urls
 

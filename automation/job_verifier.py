@@ -85,10 +85,9 @@ def verify_active_jobs():
 
     # 1. Process regular jobs with requests
     for job_id, link, platform, title in regular_jobs:
-        verified_count += 1
         try:
             time.sleep(random.uniform(VERIFIER_SLEEP_BETWEEN * 0.5, VERIFIER_SLEEP_BETWEEN))
-            
+
             if 'Sapo' in platform or 'Net-Empregos' in platform:
                 response = session.get(link, headers=HEADERS, timeout=15, allow_redirects=True)
                 status_code = response.status_code
@@ -96,7 +95,11 @@ def verify_active_jobs():
                 try:
                     response = session.head(link, headers=HEADERS, timeout=10, allow_redirects=True)
                     status_code = response.status_code
-                except:
+                except requests.RequestException:
+                    response = session.get(link, headers=HEADERS, timeout=15, allow_redirects=True)
+                    status_code = response.status_code
+                # Some servers reject HEAD — fall back to GET on 405
+                if status_code == 405:
                     response = session.get(link, headers=HEADERS, timeout=15, allow_redirects=True)
                     status_code = response.status_code
 
@@ -117,6 +120,7 @@ def verify_active_jobs():
                 expired_count += 1
             else:
                 _mark_verified(job_id, now_date)
+            verified_count += 1
         except Exception as e:
             print(f"Error processing {job_id}: {e}")
             continue
@@ -139,16 +143,17 @@ def verify_active_jobs():
         driver = None
         try:
             driver = uc.Chrome(options=options, headless=True, version_main=147)
-            
+            driver.set_page_load_timeout(VERIFIER_PAGE_TIMEOUT)
+
             # Warm-up Indeed
             if any('Indeed' in j[2] for j in selenium_jobs):
                 try:
                     driver.get("https://pt.indeed.com/")
                     time.sleep(3)
-                except: pass
+                except Exception:
+                    pass
                 
             for job_id, link, platform, title in selenium_jobs:
-                verified_count += 1
                 try:
                     driver.get(link)
                     
@@ -181,6 +186,7 @@ def verify_active_jobs():
                         expired_count += 1
                     else:
                         _mark_verified(job_id, now_date)
+                    verified_count += 1
                 except Exception as e:
                     print(f"Error processing {job_id}: {e}")
                     continue

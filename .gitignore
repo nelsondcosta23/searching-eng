@@ -9,10 +9,12 @@ __pycache__/
 
 # Configuração sensível (NUNCA fazer commit!)
 .env
+
 # Base de dados (gerada automaticamente pelos scrapers)
 database/
 *.db
 *.sqlite3
+
 # Logs e Ficheiros de Debug dos Scrapers
 logs/
 *.log
@@ -20,25 +22,36 @@ logs/
 *_error*.html
 *_error*.png
 *_screenshot*.png
+*_debug*.png
+
 # Ficheiros temporários de desenvolvimento
 tmp_*.py
 tmp/
 *.tmp
+
 # Perfil do utilizador (dados privados da API)
 profile.json
 profile_cache.json
-tmp/profile_cache.json
+
 # IDE / Sistema
 .vscode/
 .idea/
 Thumbs.db
 .DS_Store
 .gemini/
-# Scripts temporários e Workspace AI
+
+# Scripts temporários e de debug
 get_url.py
 inspect_db.py
 test_*.py
 seed_*.py
 fix_*.py
+debug_*.py
 scratch/
+
+# Documentação descartada
 CLOUDFLARE_FIXED_DOMAIN_GUIDE.md
+
+# Claude Code — configurações locais e worktrees de sessão
+.claude/settings.local.json
+.claude/worktrees/

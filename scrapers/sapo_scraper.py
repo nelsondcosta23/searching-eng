@@ -17,20 +17,23 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from automation.db_helper import save_job, job_exists
 try:
-    from automation.profile_fetcher import generate_sapo_urls, strict_keyword_match, get_user_id, get_target_roles
-    from automation.db_helper import save_job, job_exists
+    from automation.profile_fetcher import generate_sapo_urls, strict_keyword_match, get_user_id, get_job_titles, get_negative_keywords
     PESQUISAS = generate_sapo_urls()
     USER_ID = get_user_id()
-    KEYWORDS = get_target_roles()
+    KEYWORDS = get_job_titles()
+    NEGATIVE_KEYWORDS = get_negative_keywords()
 except ImportError:
     print("Warning: Could not load profile_fetcher. Using default search.")
     PESQUISAS = {
         'Default - Python - Porto': "https://emprego.sapo.pt/offers?local=porto&pesquisa=python"
     }
     USER_ID = "Unknown"
+    KEYWORDS = []
+    NEGATIVE_KEYWORDS = []
 
-from scrapers._shared import make_session, DEFAULT_HEADERS
+from scrapers._shared import make_session, DEFAULT_HEADERS, negative_keyword_match
 
 PLATAFORMA = "Sapo Jobs"
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
@@ -40,7 +43,14 @@ HEADERS = DEFAULT_HEADERS
 session = make_session(retries=3)
 
 def get_chrome_major_version():
-    """Detects the installed Chrome major version to match ChromeDriver."""
+    """Returns Chrome major version — reads from CHROME_VERSION env var if
+    pre-detected by the orchestrator, otherwise detects via subprocess."""
+    cached = os.environ.get('CHROME_VERSION', '')
+    if cached:
+        try:
+            return int(cached)
+        except ValueError:
+            pass
     try:
         result = subprocess.run(
             ['google-chrome', '--version'],
@@ -99,11 +109,10 @@ def extrair_detalhes_sapo(driver, link_completo):
     detalhes = {'descricao_completa': '', 'observacoes_extra': []}
 
     try:
-        driver.execute_script(f"window.open('{link_completo}', '_blank');")
+        driver.execute_script(f"window.open({json.dumps(link_completo)}, '_blank');")
         driver.switch_to.window(driver.window_handles[-1])
         time.sleep(1.5 + random.uniform(0.2, 0.8))
 
-        deep_soup = BeautifulSoup(driver.page_source, 'html.parser')
         # --- Full Description (JSON-LD 5-Star Extraction) ---
         time.sleep(2.0)
         deep_soup = BeautifulSoup(driver.page_source, 'html.parser')
@@ -205,6 +214,9 @@ def processar_pesquisa(pesquisa_nome, url_pesquisa, driver, total_novas_global):
             if not strict_keyword_match(titulo, KEYWORDS):
                 continue
 
+            if negative_keyword_match(titulo, NEGATIVE_KEYWORDS):
+                continue
+
             # --- Extract all rich data directly from the JSON ---
             obs_list = []
             
@@ -274,7 +286,10 @@ def processar_pesquisa(pesquisa_nome, url_pesquisa, driver, total_novas_global):
                     titulo=titulo, empresa=empresa, localizacao=localizacao,
                     link=link_completo, data_pub=data_pub, categoria=pesquisa_nome,
                     descricao_completa=final_description,
-                    observacoes=observacoes
+                    observacoes=observacoes,
+                    salario=salary_str or None,
+                    tipo_contrato=contract_type or None,
+                    nivel_experiencia=experience or None,
                 ):
                     vagas_novas_contagem += 1
                     total_novas_global += 1

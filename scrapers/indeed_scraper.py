@@ -2,6 +2,7 @@ import time
 import random
 import requests
 import re
+import json
 from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -20,11 +21,11 @@ PLATAFORMA = 'Indeed PT (Selenium)'
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from automation.profile_fetcher import generate_indeed_urls, strict_keyword_match, get_user_id, get_target_roles, get_negative_keywords
+    from automation.profile_fetcher import generate_indeed_urls, strict_keyword_match, get_user_id, get_job_titles, get_negative_keywords
     from automation.db_helper import save_job, job_exists
     PESQUISAS = generate_indeed_urls()
     USER_ID = get_user_id()
-    KEYWORDS = get_target_roles()
+    KEYWORDS = get_job_titles()
     NEGATIVE_KEYWORDS = get_negative_keywords()
 except ImportError:
     print("Warning: Could not load profile_fetcher. Using default search.")
@@ -47,7 +48,14 @@ USER_AGENTS = [
 ]
 
 def get_chrome_major_version():
-    """Detects the installed Chrome major version to match ChromeDriver."""
+    """Returns Chrome major version — reads from CHROME_VERSION env var if
+    pre-detected by the orchestrator, otherwise detects via subprocess."""
+    cached = os.environ.get('CHROME_VERSION', '')
+    if cached:
+        try:
+            return int(cached)
+        except ValueError:
+            pass
     try:
         result = subprocess.run(
             ['google-chrome', '--version'],
@@ -107,11 +115,12 @@ def extrair_detalhes_vaga(driver, link_absoluto, titulo):
         'descricao_completa': '',
         'salario': '',
         'tipo_contrato': '',
+        'nivel_experiencia': '',
         'observacoes': '',
     }
 
     try:
-        driver.execute_script(f"window.open('{link_absoluto}', '_blank');")
+        driver.execute_script(f"window.open({json.dumps(link_absoluto)}, '_blank');")
         driver.switch_to.window(driver.window_handles[-1])
         time.sleep(1.5 + random.uniform(0.5, 1.5))
 
@@ -154,13 +163,16 @@ def extrair_detalhes_vaga(driver, link_absoluto, titulo):
         if obs_list:
             detalhes['observacoes'] = " | ".join(obs_list[:8])
 
-        # Determine contract type from observations
+        # Determine contract type and experience level from observations
         for obs in obs_list:
             obs_lower = obs.lower()
             if 'full-time' in obs_lower or 'permanente' in obs_lower or 'efetivo' in obs_lower:
                 detalhes['tipo_contrato'] = obs
             elif 'part-time' in obs_lower or 'parcial' in obs_lower:
                 detalhes['tipo_contrato'] = obs
+            if any(kw in obs_lower for kw in ('senior', 'sénior', 'junior', 'júnior', 'mid-level', 'entry', 'lead', 'manager', 'director')):
+                if not detalhes['nivel_experiencia']:
+                    detalhes['nivel_experiencia'] = obs
 
     except Exception as e:
         print(f"  [Deep Extraction] Error for '{titulo}': {e}")
@@ -173,16 +185,8 @@ def extrair_detalhes_vaga(driver, link_absoluto, titulo):
 
 def processar_uma_pesquisa(driver, categoria_nome, url_info, vagas_ja_inseridas=0):
     print(f"\n[Indeed] Search: {categoria_nome}")
-    
-    url_base = url_info['url'] if isinstance(url_info, dict) else url_info
-    
-    # --- Warm-up: visit home page first to reduce bot detection ---
-    try:
-        driver.get("https://pt.indeed.com/")
-        time.sleep(random.uniform(3.0, 5.0))
-    except:
-        pass
 
+    url_base = url_info['url'] if isinstance(url_info, dict) else url_info
     novas_vagas_cont = 0
 
     for page_num in range(MAX_PAGES):
@@ -193,7 +197,7 @@ def processar_uma_pesquisa(driver, categoria_nome, url_info, vagas_ja_inseridas=
 
         try:
             driver.get(url_pagina)
-            time.sleep(random.uniform(8.0, 12.0))
+            time.sleep(random.uniform(5.0, 8.0))
 
             # --- Wait for job cards (Flexible Selectors) ---
             wait_selectors = [
@@ -288,7 +292,10 @@ def processar_uma_pesquisa(driver, categoria_nome, url_info, vagas_ja_inseridas=
                             titulo=titulo, empresa=empresa, localizacao=localizacao,
                             link=link_absoluto, data_pub=data_pub, categoria=categoria_nome,
                             descricao_completa=detalhes['descricao_completa'],
-                            observacoes=detalhes['observacoes']
+                            observacoes=detalhes['observacoes'],
+                            salario=salario_final or None,
+                            tipo_contrato=detalhes.get('tipo_contrato') or None,
+                            nivel_experiencia=detalhes.get('nivel_experiencia') or None,
                         ):
                             novas_vagas_cont += 1
                             total_agora = vagas_ja_inseridas + novas_vagas_cont
@@ -305,18 +312,12 @@ def processar_uma_pesquisa(driver, categoria_nome, url_info, vagas_ja_inseridas=
 
         except Exception as e:
             print(f"  [Indeed] Error on page {page_num + 1} for '{categoria_nome}': {e}")
+            # Attempt driver recovery so subsequent searches still run
             try:
-                logs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
-                os.makedirs(logs_dir, exist_ok=True)
-                driver.save_screenshot(os.path.join(logs_dir, f'indeed_error_p{page_num + 1}.png'))
-            except Exception as screenshot_err:
-                print(f"  [Indeed] Could not save screenshot (Chrome likely crashed): {screenshot_err}")
-                # Try to forcefully close the zombie driver and restart it
-                try:
-                    driver.quit()
-                except:
-                    pass
-                driver = configurar_driver() # Restart driver for next searches
+                driver.quit()
+            except Exception:
+                pass
+            driver = configurar_driver()
             break
 
     print(f"  → Finished '{categoria_nome}': {novas_vagas_cont} new jobs indexed.")
@@ -331,6 +332,14 @@ def iniciar_scraper_indeed():
     driver = None
     try:
         driver = configurar_driver()
+
+        # Single warm-up visit before all searches (reduces bot detection without
+        # paying the 3-5s penalty on every individual search category).
+        try:
+            driver.get("https://pt.indeed.com/")
+            time.sleep(random.uniform(3.0, 5.0))
+        except Exception:
+            pass
 
         total_novas = 0
         for cat_nome, cat_url in PESQUISAS.items():
@@ -350,6 +359,9 @@ def iniciar_scraper_indeed():
         if driver:
             driver.quit()
             print("  Selenium driver closed.")
+            tmp_dir = getattr(driver, '_tmp_profile_dir', None)
+            if tmp_dir and os.path.exists(tmp_dir):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
 if __name__ == '__main__':
     iniciar_scraper_indeed()

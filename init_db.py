@@ -3,12 +3,14 @@ import os
 
 # Define the path for the database file (inside the persistent folder)
 # When running inside Docker, this points to /app/database/vagas.db
-db_path = os.path.join('database', 'vagas.db')
+db_path = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'database', 'vagas.db'))
 
 print(f"Connecting to database at: {db_path}...")
 
+conn = None
 try:
     conn = sqlite3.connect(db_path)
+    conn.execute('PRAGMA journal_mode=WAL;')
     cursor = conn.cursor()
 
     # Create the 'vagas' table (Schema v6 — adds salario, tipo_contrato, nivel_experiencia, relevance_score)
@@ -24,7 +26,7 @@ try:
             localizacao               TEXT,
             data_publicacao           TEXT,
             data_scraped              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            data_ultima_verificacao   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            data_ultima_verificacao   TIMESTAMP DEFAULT NULL,
             link                      TEXT NOT NULL UNIQUE,
             descricao_completa        TEXT,
             status                    TEXT DEFAULT 'Ativa',
@@ -44,10 +46,11 @@ try:
     # Migrate existing databases: add new columns if they don't exist yet
     existing_cols = [row[1] for row in cursor.execute("PRAGMA table_info(vagas)").fetchall()]
     migrations = [
-        ("salario",           "TEXT"),
-        ("tipo_contrato",     "TEXT"),
-        ("nivel_experiencia", "TEXT"),
-        ("relevance_score",   "INTEGER"),
+        ("salario",                  "TEXT"),
+        ("tipo_contrato",            "TEXT"),
+        ("nivel_experiencia",        "TEXT"),
+        ("relevance_score",          "INTEGER"),
+        ("data_ultima_verificacao",  "TIMESTAMP"),
     ]
     for col_name, col_type in migrations:
         if col_name not in existing_cols:
@@ -86,6 +89,7 @@ try:
         ("negative_keywords",   "TEXT"),
         ("callback_url",        "TEXT"),
         ("last_webhook_sent",   "TIMESTAMP"),
+        ("is_active",           "INTEGER DEFAULT 1"),
     ]
     for col_name, col_type in user_migrations:
         if col_name not in existing_user_cols:

@@ -3,6 +3,7 @@ from fastapi import FastAPI, Query, HTTPException, Depends, Security, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
+import contextlib
 import os
 import json
 import hmac
@@ -35,8 +36,18 @@ OWNER_USER_ID = os.environ.get('OWNER_USER_ID', '').strip()
 ALLOW_HTTP_CALLBACKS = os.environ.get('ALLOW_HTTP_CALLBACKS', '0') == '1'
 CALLBACK_URL_MAX_LEN = 2048
 
+def _startup_checks():
+    if API_KEY == 'changeme-please':
+        print(
+            "[API] WARNING: API_KEY is set to the insecure default 'changeme-please'. "
+            "Set a strong API_KEY in .env before deploying.",
+            flush=True,
+        )
+
+
 app = FastAPI(
     title="Job Search Results API",
+    on_startup=[_startup_checks],
     description=(
         "Access scraped job results per user_id.\n\n"
         "Populated automatically by the scraper engine (Expresso, Sapo, Net-Empregos, Indeed, LinkedIn).\n\n"
@@ -260,6 +271,7 @@ def get_jobs_from_db(
     salario_only: bool,
     nivel: Optional[str],
     sort_by_relevance: bool = False,
+    min_score: Optional[int] = None,
 ) -> List[dict]:
     if not _db_exists():
         return []
@@ -298,6 +310,9 @@ def get_jobs_from_db(
     if nivel:
         query += " AND LOWER(nivel_experiencia) LIKE ?"
         params.append(f"%{nivel.lower()}%")
+    if min_score is not None:
+        query += " AND COALESCE(relevance_score, 0) >= ?"
+        params.append(min_score)
 
     if sort_by_relevance:
         query += " ORDER BY COALESCE(relevance_score, 0) DESC, data_scraped DESC LIMIT ?"
@@ -305,12 +320,10 @@ def get_jobs_from_db(
         query += " ORDER BY data_scraped DESC LIMIT ?"
     params.append(limit)
 
-    conn = _get_conn()
-    cursor = conn.cursor()
-    cursor.execute(query, params)
-    rows = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return rows
+    with contextlib.closing(_get_conn()) as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -324,11 +337,10 @@ def health_check():
     platforms  = {}
     if db_ok:
         try:
-            conn = _get_conn()
-            job_count = conn.execute("SELECT COUNT(*) FROM vagas").fetchone()[0]
-            rows = conn.execute("SELECT plataforma, COUNT(*) FROM vagas GROUP BY plataforma").fetchall()
-            platforms = {r[0]: r[1] for r in rows}
-            conn.close()
+            with contextlib.closing(_get_conn()) as conn:
+                job_count = conn.execute("SELECT COUNT(*) FROM vagas").fetchone()[0]
+                rows = conn.execute("SELECT plataforma, COUNT(*) FROM vagas GROUP BY plataforma").fetchall()
+                platforms = {r[0]: r[1] for r in rows}
         except Exception:
             pass
     return {
@@ -353,6 +365,7 @@ def get_jobs(
     nivel: Optional[str] = Query(None, description="Filter by experience level (partial match), e.g. 'senior'."),
     salario_only: bool = Query(False, description="Only return jobs that have a salary value."),
     sort_by_relevance: bool = Query(False, description="Sort by TF-IDF relevance score (descending). Default: false."),
+    min_score: Optional[int] = Query(None, ge=0, le=100, description="Minimum relevance_score (0–100). Excludes unscored jobs when set."),
     limit: int = Query(500, ge=1, le=1000, description="Max results (1–1000). Default: 500."),
     include_description: bool = Query(False, description="Include full job description text."),
     api_key: str = Depends(verify_api_key),
@@ -368,6 +381,10 @@ def get_jobs(
     elif run_date.lower() == 'all':
         effective_date = None
     else:
+        try:
+            datetime.strptime(run_date, '%Y-%m-%d')
+        except ValueError:
+            raise HTTPException(status_code=422, detail="run_date must be in YYYY-MM-DD format or 'all'.")
         effective_date = run_date
 
     jobs = get_jobs_from_db(
@@ -380,6 +397,7 @@ def get_jobs(
         salario_only=salario_only,
         nivel=nivel,
         sort_by_relevance=sort_by_relevance,
+        min_score=min_score,
     )
 
     return JobsResponse(
@@ -409,20 +427,17 @@ def get_single_job(
     if not _db_exists():
         raise HTTPException(status_code=503, detail="Database not found.")
 
-    conn = _get_conn()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT id, user_id, titulo, empresa, localizacao, plataforma, categoria, link,
-               data_publicacao, data_scraped, status, descricao_completa,
-               recrutador_nome, recrutador_link, observacoes,
-               salario, tipo_contrato, nivel_experiencia
-        FROM vagas WHERE id = ?
-        """,
-        (job_id,),
-    )
-    row = cursor.fetchone()
-    conn.close()
+    with contextlib.closing(_get_conn()) as conn:
+        row = conn.execute(
+            """
+            SELECT id, user_id, titulo, empresa, localizacao, plataforma, categoria, link,
+                   data_publicacao, data_scraped, status, descricao_completa,
+                   recrutador_nome, recrutador_link, observacoes,
+                   salario, tipo_contrato, nivel_experiencia, relevance_score
+            FROM vagas WHERE id = ?
+            """,
+            (job_id,),
+        ).fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail=f"Job with id={job_id} not found.")
@@ -438,19 +453,16 @@ def get_stats(
     if not _db_exists():
         raise HTTPException(status_code=503, detail="Database not found.")
 
-    conn = _get_conn()
     today_start, today_end = _day_range(datetime.now().strftime('%Y-%m-%d'))
-
-    total      = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=?", (user_id,)).fetchone()[0]
-    active     = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=? AND status='Ativa'", (user_id,)).fetchone()[0]
-    expired    = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=? AND status='Expirada'", (user_id,)).fetchone()[0]
-    today_cnt  = conn.execute(
-        "SELECT COUNT(*) FROM vagas WHERE user_id=? AND data_scraped >= ? AND data_scraped < ?",
-        (user_id, today_start, today_end),
-    ).fetchone()[0]
-    by_plat    = conn.execute("SELECT plataforma, COUNT(*) FROM vagas WHERE user_id=? GROUP BY plataforma", (user_id,)).fetchall()
-
-    conn.close()
+    with contextlib.closing(_get_conn()) as conn:
+        total      = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=?", (user_id,)).fetchone()[0]
+        active     = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=? AND status='Ativa'", (user_id,)).fetchone()[0]
+        expired    = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=? AND status='Expirada'", (user_id,)).fetchone()[0]
+        today_cnt  = conn.execute(
+            "SELECT COUNT(*) FROM vagas WHERE user_id=? AND data_scraped >= ? AND data_scraped < ?",
+            (user_id, today_start, today_end),
+        ).fetchone()[0]
+        by_plat    = conn.execute("SELECT plataforma, COUNT(*) FROM vagas WHERE user_id=? GROUP BY plataforma", (user_id,)).fetchall()
 
     return StatsResponse(
         total_jobs=total,

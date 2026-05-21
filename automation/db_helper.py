@@ -98,16 +98,37 @@ def execute_with_retry(sql: str, params: tuple = (), max_attempts: int = _DEFAUL
                 conn.close()
     return -1  # unreachable
 
-def job_exists(link: str) -> bool:
-    """Checks if a job link is already in the database."""
+def job_exists(link: str, titulo: str = '', empresa: str = '', user_id: str = '') -> bool:
+    """Checks if a job already exists by link OR by (titulo, empresa, user_id).
+
+    The secondary check prevents multi-office duplicates — e.g. the same LinkedIn
+    job posting for Porto and Coimbra with different URLs but identical title+company.
+    Only applied when titulo AND empresa AND user_id are all provided.
+    """
     tentativas = 5
     while tentativas > 0:
         conn = None
         try:
             conn = _get_connection()
             cursor = conn.cursor()
+
+            # Primary check: exact URL match
             cursor.execute('SELECT 1 FROM vagas WHERE link = ?', (link,))
-            return cursor.fetchone() is not None
+            if cursor.fetchone() is not None:
+                return True
+
+            # Secondary check: same title + company already in DB for this user
+            if titulo and empresa and user_id:
+                t_norm = titulo.strip().lower()
+                e_norm = empresa.strip().lower()
+                cursor.execute(
+                    'SELECT 1 FROM vagas WHERE LOWER(TRIM(titulo)) = ? AND LOWER(TRIM(empresa)) = ? AND user_id = ? LIMIT 1',
+                    (t_norm, e_norm, user_id),
+                )
+                if cursor.fetchone() is not None:
+                    return True
+
+            return False
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e).lower():
                 time.sleep(1 + random.uniform(0.1, 0.5))

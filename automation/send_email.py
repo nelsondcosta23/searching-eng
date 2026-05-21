@@ -1,35 +1,26 @@
 import sqlite3
+import contextlib
 import os
+import html as html_module
 import requests
 from datetime import datetime, timedelta
 
 DB_PATH          = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
-RESEND_API_KEY   = os.environ.get('RESEND_API_KEY', '')
-EMAIL_DESTINO    = os.environ.get('EMAIL_DESTINO', '')
 EMAIL_REMETENTE  = os.environ.get('EMAIL_REMETENTE', 'jobs@resend.dev')
-
-if not RESEND_API_KEY:
-    raise EnvironmentError("RESEND_API_KEY is not defined! Check your .env file")
-if not EMAIL_DESTINO:
-    raise EnvironmentError("EMAIL_DESTINO is not defined! Check your .env file")
 
 def obtain_recent_jobs():
     """Gets jobs inserted in the last 24 hours."""
-    conn = sqlite3.connect(DB_PATH, timeout=20)
-    conn.execute('PRAGMA journal_mode=WAL;')
-    cursor = conn.cursor()
-
     limit = (datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
-    cursor.execute('''
-        SELECT titulo, empresa, localizacao, plataforma, link, data_scraped
-        FROM vagas
-        WHERE data_scraped >= ?
-        ORDER BY plataforma, data_scraped DESC
-    ''', (limit,))
-
-    jobs = cursor.fetchall()
-    conn.close()
-    return jobs
+    with contextlib.closing(sqlite3.connect(DB_PATH, timeout=20)) as conn:
+        conn.execute('PRAGMA journal_mode=WAL;')
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT titulo, empresa, localizacao, plataforma, link, data_scraped
+            FROM vagas
+            WHERE data_scraped >= ?
+            ORDER BY plataforma, data_scraped DESC
+        ''', (limit,))
+        return cursor.fetchall()
 
 def build_html_email(jobs, today_date):
     """Builds the HTML body of the email."""
@@ -38,15 +29,20 @@ def build_html_email(jobs, today_date):
     else:
         rows = ""
         for title, company, location, platform, link, _ in jobs:
+            safe_title    = html_module.escape(title or '')
+            safe_company  = html_module.escape(company or 'N/A')
+            safe_location = html_module.escape(location or 'N/A')
+            safe_platform = html_module.escape(platform or '')
+            safe_link     = html_module.escape(link or '#')
             rows += f"""
             <tr>
                 <td style="padding:10px;border-bottom:1px solid #f0f0f0;">
-                    <a href="{link}" style="color:#4F46E5;font-weight:600;text-decoration:none;">{title}</a>
+                    <a href="{safe_link}" style="color:#4F46E5;font-weight:600;text-decoration:none;">{safe_title}</a>
                 </td>
-                <td style="padding:10px;border-bottom:1px solid #f0f0f0;color:#555;">{company or 'N/A'}</td>
-                <td style="padding:10px;border-bottom:1px solid #f0f0f0;color:#555;">{location or 'N/A'}</td>
+                <td style="padding:10px;border-bottom:1px solid #f0f0f0;color:#555;">{safe_company}</td>
+                <td style="padding:10px;border-bottom:1px solid #f0f0f0;color:#555;">{safe_location}</td>
                 <td style="padding:10px;border-bottom:1px solid #f0f0f0;">
-                    <span style="background:#EEF2FF;color:#4F46E5;padding:3px 8px;border-radius:12px;font-size:12px;">{platform}</span>
+                    <span style="background:#EEF2FF;color:#4F46E5;padding:3px 8px;border-radius:12px;font-size:12px;">{safe_platform}</span>
                 </td>
             </tr>"""
 
@@ -69,8 +65,8 @@ def build_html_email(jobs, today_date):
     <body style="margin:0;padding:0;background:#f8f9fa;font-family:Arial,sans-serif;">
         <div style="max-width:700px;margin:30px auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 16px rgba(0,0,0,0.08);">
             <div style="background:#4F46E5;padding:30px;text-align:center;">
-                <h1 style="color:white;margin:0;font-size:24px;">🔍 Daily Jobs Summary</h1>
-                <p style="color:#C7D2FE;margin:8px 0 0;">{today_date}</p>
+                <h1 style="color:white;margin:0;font-size:24px;">Daily Jobs Summary</h1>
+                <p style="color:#C7D2FE;margin:8px 0 0;">{html_module.escape(today_date)}</p>
             </div>
             <div style="padding:30px;">
                 <p style="color:#374151;margin:0 0 20px;font-size:16px;">
@@ -86,19 +82,19 @@ def build_html_email(jobs, today_date):
     </html>
     """
 
-def send_email(html, num_jobs, today_date):
+def send_email(html, num_jobs, today_date, resend_api_key, email_destino):
     """Sends the email via Resend API."""
-    subject = f"📋 {num_jobs} New Job Openings — {today_date}"
+    subject = f"{num_jobs} New Job Openings — {today_date}"
 
     payload = {
         "from": EMAIL_REMETENTE,
-        "to": [EMAIL_DESTINO],
+        "to": [email_destino],
         "subject": subject,
         "html": html,
     }
 
     headers = {
-        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Authorization": f"Bearer {resend_api_key}",
         "Content-Type": "application/json",
     }
 
@@ -106,11 +102,18 @@ def send_email(html, num_jobs, today_date):
 
     if response.status_code in (200, 201):
         data = response.json()
-        print(f"✅ Email sent successfully! ID: {data.get('id')}")
+        print(f"Email sent successfully! ID: {data.get('id')}")
     else:
-        print(f"❌ Error sending email: {response.status_code} — {response.text}")
+        print(f"Error sending email: {response.status_code} — {response.text}")
 
 def main():
+    resend_api_key = os.environ.get('RESEND_API_KEY', '')
+    email_destino  = os.environ.get('EMAIL_DESTINO', '')
+    if not resend_api_key:
+        raise EnvironmentError("RESEND_API_KEY is not defined! Check your .env file")
+    if not email_destino:
+        raise EnvironmentError("EMAIL_DESTINO is not defined! Check your .env file")
+
     today_date = datetime.now().strftime('%B %d, %Y')
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Preparing daily email...")
 
@@ -118,7 +121,7 @@ def main():
     print(f"  → {len(jobs)} new jobs found in the last 24h.")
 
     html = build_html_email(jobs, today_date)
-    send_email(html, len(jobs), today_date)
+    send_email(html, len(jobs), today_date, resend_api_key, email_destino)
 
 if __name__ == '__main__':
     main()

@@ -1,31 +1,59 @@
-venv/
+# =======================================================
+# Git e controlo de versão
+.git/
+.gitignore
+.gitattributes
+
+# Python bytecode
 __pycache__/
+*.pyc
+*.pyo
+venv/
+
+# Base de dados (montada via volume em docker-compose)
 database/*.db
 database/*.db-journal
 database/*.db-wal
-logs/*.log
-logs/*.png
-logs/*.html
-.env
-.git/
-.vscode/
-.gemini/
-scratch/
-tmp/
+database/*.db-shm
+database/backups/
+
+# Logs e debug (montados via volume)
+logs/
 *.log
-*.tmp
+*_error*.html
+*_error*.png
+*_debug*.png
+tmp/
+scratch/
+
+# Configuração sensível (injectada via env_file)
+.env
+.env.example
+
+# Documentação (não necessária dentro do container)
+README.md
+API_INTEGRATION_GUIDE.md
+CLAUDE.md
+
+# Docker — o compose e o Dockerfile principal não precisam
+# de estar dentro da imagem. NOTA: Dockerfile.notifier NÃO
+# está aqui porque é necessário no build context do serviço
+# tunnel_notifier (dockerfile: Dockerfile.notifier).
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# IDE e ferramentas locais
+.vscode/
+.idea/
+.gemini/
+.claude/
+*.bat
+
+# Scripts temporários e de debug
 get_url.py
 inspect_db.py
 test_*.py
 seed_*.py
 fix_*.py
 debug_*.py
-.dockerignore
-.gitignore
-*.bat
-API_INTEGRATION_GUIDE.md
-CLOUDFLARE_FIXED_DOMAIN_GUIDE.md
-README.md
-Dockerfile
-docker-compose.yml
-.env.example

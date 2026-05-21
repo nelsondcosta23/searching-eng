@@ -1,5 +1,6 @@
 import streamlit as st
 import sqlite3
+import contextlib
 import pandas as pd
 import os
 import psutil
@@ -15,7 +16,12 @@ def is_job_running():
     
     # 2. Check local processes (Manual runs from UI)
     try:
-        scripts = ["orchestrator.py", "scraper.py", "job_verifier.py"]
+        scripts = [
+            "orchestrator.py", "job_verifier.py",
+            "sapo_scraper.py", "expresso_scraper.py", "linkedin_scraper.py",
+            "indeed_scraper.py", "itjobs_scraper.py",
+            "companies_scraper.py",
+        ]
         for proc in psutil.process_iter(['cmdline']):
             cmdline = proc.info.get('cmdline')
             if cmdline:
@@ -37,19 +43,35 @@ import subprocess
 def load_jobs():
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
-    conn = sqlite3.connect(DB_PATH, timeout=20, check_same_thread=False)
-    # Fetching all relevant columns for details view
-    df = pd.read_sql_query('''
-        SELECT id, user_id, titulo, empresa, localizacao, plataforma, categoria, link, status,
-               salario, tipo_contrato, nivel_experiencia, observacoes,
-               recrutador_nome, recrutador_link, data_publicacao,
-               COALESCE(data_scraped, '') AS data_scraped,
-               COALESCE(descricao_completa, 'Sem descrição disponível.') AS descricao_completa
-        FROM vagas
-        ORDER BY data_scraped DESC
-    ''', conn)
-    conn.close()
-    return df
+    with contextlib.closing(sqlite3.connect(DB_PATH, timeout=20, check_same_thread=False)) as conn:
+        conn.execute('PRAGMA journal_mode=WAL;')
+        # descricao_completa excluded here — fetched on demand in detail view to keep memory low
+        return pd.read_sql_query('''
+            SELECT id, user_id, titulo, empresa, localizacao, plataforma, categoria, link, status,
+                   salario, tipo_contrato, nivel_experiencia, observacoes,
+                   recrutador_nome, recrutador_link, data_publicacao,
+                   COALESCE(relevance_score, 0) AS relevance_score,
+                   COALESCE(data_scraped, '') AS data_scraped
+            FROM vagas
+            WHERE data_scraped >= date('now', '-45 days')
+            ORDER BY data_scraped DESC
+        ''', conn)
+
+
+@st.cache_data(ttl=300)
+def load_job_description(job_id: int) -> str:
+    """Fetches descricao_completa for a single job — called only when detail view opens."""
+    if not os.path.exists(DB_PATH):
+        return 'Sem descrição disponível.'
+    try:
+        with contextlib.closing(sqlite3.connect(DB_PATH, timeout=10)) as conn:
+            conn.execute('PRAGMA journal_mode=WAL;')
+            row = conn.execute(
+                "SELECT descricao_completa FROM vagas WHERE id = ?", (job_id,)
+            ).fetchone()
+        return (row[0] if row and row[0] else 'Sem descrição disponível.')
+    except Exception:
+        return 'Sem descrição disponível.'
 
 df = load_jobs()
 
@@ -58,32 +80,32 @@ def get_users_perfil():
     if not os.path.exists(DB_PATH):
         return []
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=5)
-        rows = conn.execute(
-            "SELECT user_id, job_titles FROM users_perfil WHERE is_active = 1 ORDER BY created_at"
-        ).fetchall()
-        conn.close()
-        return rows
-    except:
+        with contextlib.closing(sqlite3.connect(DB_PATH, timeout=5)) as conn:
+            conn.execute('PRAGMA journal_mode=WAL;')
+            return conn.execute(
+                "SELECT user_id, job_titles FROM users_perfil WHERE is_active = 1 ORDER BY created_at"
+            ).fetchall()
+    except Exception:
         return []
 
 def get_platform_metrics():
     if not os.path.exists(DB_PATH):
         return {}
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=5)
-        df = pd.read_sql_query("SELECT plataforma, status FROM vagas", conn)
-        conn.close()
-        
+        with contextlib.closing(sqlite3.connect(DB_PATH, timeout=5)) as conn:
+            conn.execute('PRAGMA journal_mode=WAL;')
+            rows = conn.execute(
+                "SELECT plataforma, status, COUNT(*) FROM vagas GROUP BY plataforma, status"
+            ).fetchall()
         metrics = {}
-        platforms = ['Sapo Jobs', 'Expresso Jobs', 'LinkedIn PT', 'Indeed PT', 'Net-Empregos']
+        platforms = ['Sapo Jobs', 'Expresso Jobs', 'LinkedIn PT', 'Indeed PT', 'ITJobs', 'Companies']
         for p in platforms:
-            p_df = df[df['plataforma'].str.contains(p.split()[0], na=False, case=False)]
-            ativas = len(p_df[p_df['status'] == 'Ativa'])
-            expiradas = len(p_df[p_df['status'] == 'Expirada'])
+            key = p.split()[0].lower()
+            ativas = sum(c for plat, st, c in rows if key in plat.lower() and st == 'Ativa')
+            expiradas = sum(c for plat, st, c in rows if key in plat.lower() and st == 'Expirada')
             metrics[p] = {'ativas': ativas, 'expiradas': expiradas}
         return metrics
-    except:
+    except Exception:
         return {}
 
 @st.dialog("Terminal de Execução", width="large")
@@ -97,8 +119,8 @@ def run_in_terminal(cmd_list, env_vars=None, title="A executar...", post_cmd_lis
         current_stats = get_platform_metrics()
         if current_stats and initial_stats:
             with metrics_placeholder.container():
-                cols = st.columns(5)
-                platforms = ['Sapo Jobs', 'Expresso Jobs', 'LinkedIn PT', 'Indeed PT', 'Net-Empregos']
+                cols = st.columns(7)
+                platforms = ['Sapo Jobs', 'Expresso Jobs', 'LinkedIn PT', 'Indeed PT', 'ITJobs', 'Companies']
                 for i, p in enumerate(platforms):
                     short_name = p.replace(" PT", "").replace(" Jobs", "")
                     curr = current_stats.get(p, {'ativas': 0, 'expiradas': 0})
@@ -175,7 +197,7 @@ def run_in_terminal(cmd_list, env_vars=None, title="A executar...", post_cmd_lis
     if st.button("Fechar e Atualizar o Dashboard", type="primary", use_container_width=True):
         st.cache_data.clear()
         st.query_params.clear()
-        st.switch_page("app/job_dashboard.py")
+        st.rerun()
 
 with st.sidebar:
     st.header("⚡ Ações Rápidas")
@@ -186,17 +208,17 @@ with st.sidebar:
         if target == "Todas as Plataformas":
             st.session_state.main_platform = "Todas"
             return
-            
-        # Pega a primeira palavra (ex: 'Indeed', 'LinkedIn', 'Sapo')
-        base_name = target.split(' ')[0] 
-        
-        # Procura a correspondência exata nos dados atuais
-        plataformas_atuais = df['plataforma'].unique().tolist()
-        for p in plataformas_atuais:
-            if base_name in p:
+        # Companies uses a synthetic filter value (multiple platforms start with "Companies:")
+        if target == "Companies":
+            st.session_state.main_platform = "Companies"
+            return
+
+        base_name = target.split(' ')[0]  # 'Indeed', 'LinkedIn', 'Sapo', etc.
+        for p in df['plataforma'].unique().tolist():
+            if base_name.lower() in p.lower():
                 st.session_state.main_platform = p
                 return
-                
+
         st.session_state.main_platform = "Todas"
 
     st.subheader("Procurar Novas Vagas")
@@ -205,8 +227,8 @@ with st.sidebar:
     all_users = get_users_perfil()
     user_options = {"🌐 Todos os Utilizadores": "ALL"}
     for uid, titles in all_users:
-        # Mostra apenas os primeiros 5 caracteres do ID
-        label = f"👤 ID: {str(uid)[:5]}"
+        display = (titles or "").split(',')[0].strip()[:30] or str(uid)[:8]
+        label = f"👤 {display}"
         user_options[label] = uid
 
     selected_user_label = st.selectbox(
@@ -217,15 +239,21 @@ with st.sidebar:
     selected_user_id = user_options[selected_user_label]
 
     scrape_target = st.selectbox("Plataforma", [
-        "Todas as Plataformas", 
-        "Sapo Jobs", 
-        "Expresso Jobs", 
-        "LinkedIn PT", 
-        "Indeed PT", 
-        "Net-Empregos"
+        "Todas as Plataformas",
+        "Sapo Jobs",
+        "Expresso Jobs",
+        "LinkedIn PT",
+        "Indeed PT",
+        "ITJobs",
+        "Companies",
     ], key="sidebar_platform", on_change=sync_platform_filter)
     
-    max_jobs_limit = st.selectbox("Limite de Vagas", [1, 3, 5, 10, 20, 50, 100], index=2)
+    max_jobs_limit = st.selectbox(
+        "Limite de Vagas",
+        options=[0, 5, 10, 20, 50, 100],
+        index=0,
+        format_func=lambda x: "Sem limite (produção)" if x == 0 else str(x),
+    )
     
     if st.button("Iniciar Pesquisa", type="primary", use_container_width=True):
         env_with_limit = os.environ.copy()
@@ -249,9 +277,11 @@ with st.sidebar:
             cmd = ["python", "-u", "/app/scrapers/linkedin_scraper.py"]
         elif scrape_target == "Indeed PT":
             cmd = ["python", "-u", "/app/scrapers/indeed_scraper.py"]
-        elif scrape_target == "Net-Empregos":
-            cmd = ["python", "-u", "/app/scrapers/net_jobs_scraper.py"]
-        
+        elif scrape_target == "ITJobs":
+            cmd = ["python", "-u", "/app/scrapers/itjobs_scraper.py"]
+        elif scrape_target == "Companies":
+            cmd = ["python", "-u", "/app/scrapers/companies_scraper.py"]
+
         if cmd:
             user_label = selected_user_label if selected_user_id != "ALL" else "todos os utilizadores"
             post_cmd = ["python", "-u", "/app/automation/job_scorer.py"] if scrape_target != "Todas as Plataformas" else None
@@ -259,6 +289,11 @@ with st.sidebar:
 
     st.divider()
     
+    if st.button("🔄 Atualizar Dados", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+    st.divider()
     st.subheader("Manutenção")
     if st.button("Verificar Vagas Expiradas", use_container_width=True):
         env_vars = os.environ.copy()
@@ -301,7 +336,7 @@ st.markdown("""
         font-size: 14px !important;
         color: #6B7280;
     }
-    .stDataFrame { border: 1px solid #E5E7EB; border_radius: 8px; }
+    .stDataFrame { border: 1px solid #E5E7EB; border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -342,7 +377,7 @@ def show_detail_view(vaga_id):
     
     with main_col:
         st.markdown("### Descrição da Vaga")
-        st.markdown(v['descricao_completa'])
+        st.markdown(load_job_description(v['id']))
         
     with side_col:
         st.markdown("### Info Adicional")
@@ -386,7 +421,11 @@ else:
         if "main_platform" not in st.session_state:
             st.session_state.main_platform = "Todas"
             
-        plataformas_disponiveis = ["Todas"] + sorted(df['plataforma'].unique().tolist())
+        _raw_platforms = sorted(df['plataforma'].unique().tolist())
+        # Aggregate all "Companies: ..." entries into a single "Companies" option
+        _has_companies = any(p.startswith('Companies:') for p in _raw_platforms)
+        _non_company = [p for p in _raw_platforms if not p.startswith('Companies:')]
+        plataformas_disponiveis = ["Todas"] + _non_company + (["Companies"] if _has_companies else [])
         if st.session_state.main_platform not in plataformas_disponiveis:
             st.session_state.main_platform = "Todas"
             
@@ -396,12 +435,18 @@ else:
         # --- 3. Execute Filtering ---
         df_f = df.copy()
         if search:
-            mask = df_f.apply(lambda x: x.astype(str).str.contains(search, case=False).any(), axis=1)
+            search_cols = ['titulo', 'empresa', 'localizacao', 'plataforma', 'observacoes']
+            mask = df_f[search_cols].apply(
+                lambda col: col.astype(str).str.contains(search, case=False, regex=False, na=False)
+            ).any(axis=1)
             df_f = df_f[mask]
         if user_filter != "Todos":
             df_f = df_f[df_f['user_id'] == user_filter]
         if platform != "Todas":
-            df_f = df_f[df_f['plataforma'] == platform]
+            if platform == "Companies":
+                df_f = df_f[df_f['plataforma'].str.startswith('Companies:', na=False)]
+            else:
+                df_f = df_f[df_f['plataforma'] == platform]
         if status != "Todos":
             df_f = df_f[df_f['status'] == status]
 
@@ -409,7 +454,7 @@ else:
         with top_container:
             t1, m1, m2, m3 = st.columns([2, 1, 1, 1])
             with t1:
-                st.title("🔍 Job Search")
+                st.title("🔍 Pesquisa de Emprego")
                 st.caption("Agregador de vagas em tempo real. Seleciona uma vaga para ver detalhes.")
             
             m1.metric("Total de Vagas", len(df_f))
@@ -417,13 +462,20 @@ else:
             m3.metric("Empresas", df_f['empresa'].nunique())
             st.divider()
 
-        st.write(f"Exibindo **{len(df_f)}** resultados.")
 
         # Prepare Display Dataframe
         df_disp = df_f.copy()
         
         # Map user_id to friendly name
         df_disp['Perfil'] = df_disp['user_id'].apply(lambda x: f"ID: {str(x)[:5]}")
+
+        # Simplify "Companies: Feedzai (Greenhouse)" → "Feedzai"
+        def _fmt_fonte(p):
+            if isinstance(p, str) and p.startswith('Companies:'):
+                inner = p[len('Companies:'):].strip()
+                return inner.split('(')[0].strip()
+            return p
+        df_disp['plataforma'] = df_disp['plataforma'].apply(_fmt_fonte)
         
         # Truncate Title to 40 characters
         df_disp['Vaga'] = df_disp['titulo'].apply(lambda x: (x[:37] + "...") if len(x) > 40 else x)
@@ -438,9 +490,10 @@ else:
             'link': 'Abrir'
         })
 
-        # Columns requested by user
-        cols_to_show = ['Abrir', 'ID', 'Perfil', 'Vaga', 'Fonte', 'Estado', 'Criada em']
-        
+        df_disp_view['Score'] = df_disp['relevance_score'].fillna(0).astype(int)
+
+        cols_to_show = ['Abrir', 'ID', 'Score', 'Perfil', 'Vaga', 'Fonte', 'Estado', 'Criada em']
+
         # New selection feature in st.dataframe (Streamlit 1.35+)
         selection = st.dataframe(
             df_disp_view[cols_to_show],
@@ -451,10 +504,11 @@ else:
             column_config={
                 "Abrir": st.column_config.LinkColumn("🔗", display_text="Site"),
                 "ID": st.column_config.NumberColumn("ID", width="small"),
+                "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d", width="small"),
                 "Perfil": st.column_config.TextColumn("Perfil", width="medium"),
                 "Vaga": st.column_config.TextColumn("Vaga", width="medium"),
                 "Estado": st.column_config.TextColumn("Estado", width="small"),
-                "Criada em": st.column_config.DateColumn("Criada em")
+                "Criada em": st.column_config.TextColumn("Criada em", width="medium")
             }
         )
 
@@ -465,7 +519,7 @@ else:
             st.query_params.id = selected_vaga_id
             st.rerun()
             
-        st.caption(f"Fim da lista. Total de **{len(df_f)}** vagas encontradas nesta pesquisa.")
+        st.caption(f"**{len(df_f)}** vagas encontradas.")
 
 st.markdown("---")
 st.caption("Sistema de Monitorização de Emprego | © 2026")

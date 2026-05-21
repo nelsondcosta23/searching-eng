@@ -16,6 +16,7 @@ Payload format:
 """
 
 import sqlite3
+import contextlib
 import os
 import sys
 import json
@@ -52,38 +53,35 @@ def get_conn():
 
 def get_active_users_with_callback():
     """Returns all active users that have a callback_url configured."""
-    conn = get_conn()
-    rows = conn.execute(
-        "SELECT user_id, callback_url FROM users_perfil "
-        "WHERE is_active = 1 AND callback_url IS NOT NULL AND callback_url != ''",
-    ).fetchall()
-    conn.close()
-    return rows
+    with contextlib.closing(get_conn()) as conn:
+        return conn.execute(
+            "SELECT user_id, callback_url FROM users_perfil "
+            "WHERE is_active = 1 AND callback_url IS NOT NULL AND callback_url != ''",
+        ).fetchall()
 
 
 def get_todays_top_jobs(user_id: str, limit: int = 5):
     """Returns the top N most relevant jobs scraped today for a given user."""
     today_start, today_end = _day_range(datetime.now().strftime('%Y-%m-%d'))
-    conn = get_conn()
-    rows = conn.execute(
-        """
-        SELECT
-            id, user_id, titulo, empresa, localizacao, plataforma, categoria,
-            link, data_publicacao, data_scraped, status,
-            descricao_completa, recrutador_nome, recrutador_link,
-            observacoes, salario, tipo_contrato, nivel_experiencia,
-            COALESCE(relevance_score, 0) AS relevance_score
-        FROM vagas
-        WHERE user_id = ?
-          AND status = 'Ativa'
-          AND data_scraped >= ?
-          AND data_scraped < ?
-        ORDER BY COALESCE(relevance_score, 0) DESC, data_scraped DESC
-        LIMIT ?
-        """,
-        (user_id, today_start, today_end, limit),
-    ).fetchall()
-    conn.close()
+    with contextlib.closing(get_conn()) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id, user_id, titulo, empresa, localizacao, plataforma, categoria,
+                link, data_publicacao, data_scraped, status,
+                descricao_completa, recrutador_nome, recrutador_link,
+                observacoes, salario, tipo_contrato, nivel_experiencia,
+                COALESCE(relevance_score, 0) AS relevance_score
+            FROM vagas
+            WHERE user_id = ?
+              AND status = 'Ativa'
+              AND data_scraped >= ?
+              AND data_scraped < ?
+            ORDER BY COALESCE(relevance_score, 0) DESC, data_scraped DESC
+            LIMIT ?
+            """,
+            (user_id, today_start, today_end, limit),
+        ).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -107,12 +105,21 @@ def send_webhook(user_id: str, callback_url: str, jobs: list) -> bool:
     on transient failures (5xx, network/timeout). Does NOT retry on 4xx since
     they indicate a permanent client problem (bad URL, auth, payload).
     """
+    # Truncate long descriptions to cap payload size (A4)
+    truncated_jobs = []
+    for job in jobs:
+        j = dict(job)
+        desc = j.get('descricao_completa') or ''
+        if len(desc) > 2000:
+            j['descricao_completa'] = desc[:2000] + '…'
+        truncated_jobs.append(j)
+
     payload = {
         "event": "new_jobs_found",
         "user_id": user_id,
         "scraped_at": datetime.now().isoformat(),
-        "total_sent": len(jobs),
-        "jobs": jobs,
+        "total_sent": len(truncated_jobs),
+        "jobs": truncated_jobs,
     }
     data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
     print(f"  📦 Payload size: {len(data) // 1024} KB")

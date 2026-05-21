@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     unzip \
     curl \
     cron \
+    xvfb \
     libnss3 \
     libatk-bridge2.0-0 \
     libcups2 \

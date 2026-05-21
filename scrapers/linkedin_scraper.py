@@ -4,6 +4,7 @@ import requests
 import re
 import os
 import sys
+import json
 import tempfile
 import shutil
 import subprocess
@@ -18,12 +19,12 @@ DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname
 PLATAFORMA = 'LinkedIn PT (Selenium)'
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from automation.db_helper import save_job, job_exists
 try:
-    from automation.profile_fetcher import generate_linkedin_urls, strict_keyword_match, get_user_id, get_target_roles, get_negative_keywords
-    from automation.db_helper import save_job, job_exists
+    from automation.profile_fetcher import generate_linkedin_urls, strict_keyword_match, get_user_id, get_job_titles, get_negative_keywords
     PESQUISAS = generate_linkedin_urls()   # dict: key → {url, is_priority}
     USER_ID = get_user_id()
-    KEYWORDS = get_target_roles()
+    KEYWORDS = get_job_titles()
     NEGATIVE_KEYWORDS = get_negative_keywords()
 except ImportError:
     print("Warning: Could not load profile_fetcher. Using default search.")
@@ -33,6 +34,7 @@ except ImportError:
     USER_ID = "Unknown"
     KEYWORDS = []
     NEGATIVE_KEYWORDS = []
+    strict_keyword_match = lambda text, keywords: any(k in text.lower() for k in keywords)
 
 from scrapers._shared import negative_keyword_match
 
@@ -50,6 +52,13 @@ USER_AGENTS = [
 # Method 1: LinkedIn Guest API (fast, no Selenium for listing pages)
 # ─────────────────────────────────────────────────────────────────────────────
 GUEST_API_BASE = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/"
+
+def _normalize_linkedin_url(link: str) -> str:
+    """Normalize regional LinkedIn domains (pt.linkedin.com, uk.linkedin.com, etc.)
+    to www.linkedin.com so the same job from different searches deduplicates correctly."""
+    import re as _re
+    return _re.sub(r'https://[a-z]{2}\.linkedin\.com/', 'https://www.linkedin.com/', link)
+
 
 def _build_guest_url(keywords: str, location: str, start: int, remote: bool) -> str:
     import urllib.parse
@@ -91,7 +100,7 @@ def _fetch_listing_via_guest_api(keywords: str, location: str, start: int, remot
                 link_tag = vaga.find('a', class_='base-card__full-link') or vaga.find('a')
                 if not link_tag:
                     continue
-                link = link_tag.get('href', '').split('?')[0]
+                link = _normalize_linkedin_url(link_tag.get('href', '').split('?')[0])
                 if not link.startswith('http'):
                     continue
 
@@ -124,7 +133,14 @@ def _fetch_listing_via_guest_api(keywords: str, location: str, start: int, remot
 # Deep Extraction (Selenium — for individual job description pages)
 # ─────────────────────────────────────────────────────────────────────────────
 def _get_chrome_major_version():
-    """Detects the installed Chrome major version to match ChromeDriver."""
+    """Returns Chrome major version — reads from CHROME_VERSION env var if
+    pre-detected by the orchestrator, otherwise detects via subprocess."""
+    cached = os.environ.get('CHROME_VERSION', '')
+    if cached:
+        try:
+            return int(cached)
+        except ValueError:
+            pass
     try:
         result = subprocess.run(
             ['google-chrome', '--version'],
@@ -219,7 +235,7 @@ def _extrair_detalhes_selenium(driver, link: str, titulo: str) -> dict:
     detalhes = {'descricao_completa': '', 'recrutador_nome': '', 'recrutador_link': '',
                  'observacoes': '', 'salario': '', 'tipo_contrato': '', 'nivel_experiencia': ''}
     try:
-        driver.execute_script(f"window.open('{link}', '_blank');")
+        driver.execute_script(f"window.open({json.dumps(link)}, '_blank');")
         driver.switch_to.window(driver.window_handles[-1])
         time.sleep(1.5 + random.uniform(0.5, 1.5))
 
@@ -277,7 +293,7 @@ def _parse_url_parts(full_url: str) -> tuple[str, str, bool]:
     return keywords, location, remote
 
 
-def processar_uma_pesquisa(cat_nome: str, url_info: dict, driver, vagas_ja_inseridas: int) -> int:
+def processar_uma_pesquisa(cat_nome: str, url_info: dict, driver, vagas_ja_inseridas: int, seen_jobs: set) -> int:
     url       = url_info['url']
     is_prio   = url_info.get('is_priority', False)
     max_pages = PRIORITY_PAGES if is_prio else STANDARD_PAGES
@@ -317,7 +333,7 @@ def processar_uma_pesquisa(cat_nome: str, url_info: dict, driver, vagas_ja_inser
                         l = vaga.find('a', class_='base-card__full-link') or vaga.find('a')
                         if not t or not l:
                             continue
-                        link = l.get('href', '').split('?')[0]
+                        link = _normalize_linkedin_url(l.get('href', '').split('?')[0])
                         if not link.startswith('http'):
                             continue
                         emp = vaga.find(class_='base-search-card__subtitle')
@@ -344,8 +360,19 @@ def processar_uma_pesquisa(cat_nome: str, url_info: dict, driver, vagas_ja_inser
         print(f"  → {len(jobs_on_page)} jobs on page {page_num + 1}.")
 
         for job in jobs_on_page:
-            if job_exists(job['link']):
+            titulo_raw  = job.get('titulo', '') or ''
+            empresa_raw = job.get('empresa', '') or ''
+
+            # job_exists checks BOTH link AND (titulo, empresa, user_id)
+            # — catches multi-office duplicates with different URLs.
+            if job_exists(job['link'], titulo=titulo_raw, empresa=empresa_raw, user_id=USER_ID):
                 continue
+
+            # Session-level dedup as fast short-circuit (avoids DB call for same-run dupes)
+            dedup_key = (titulo_raw.strip().lower(), empresa_raw.strip().lower())
+            if dedup_key in seen_jobs:
+                continue
+            seen_jobs.add(dedup_key)
 
             # Apply keyword filters BEFORE deep extraction to save Selenium budget.
             titulo = job.get('titulo', '') or ''
@@ -405,10 +432,11 @@ def iniciar_scraper_linkedin():
     try:
         driver = _configurar_driver()
         total = 0
+        seen_jobs: set = set()  # dedup (titulo, empresa) across all searches this run
 
         # Priority searches first
         for cat, url_info in priority_pesquisas.items():
-            novas = processar_uma_pesquisa(cat, url_info, driver, total)
+            novas = processar_uma_pesquisa(cat, url_info, driver, total, seen_jobs)
             total += novas
             if MAX_JOBS > 0 and total >= MAX_JOBS:
                 break
@@ -416,7 +444,7 @@ def iniciar_scraper_linkedin():
         # Then standard searches
         if not (MAX_JOBS > 0 and total >= MAX_JOBS):
             for cat, url_info in standard_pesquisas.items():
-                novas = processar_uma_pesquisa(cat, url_info, driver, total)
+                novas = processar_uma_pesquisa(cat, url_info, driver, total, seen_jobs)
                 total += novas
                 if MAX_JOBS > 0 and total >= MAX_JOBS:
                     break
@@ -429,6 +457,9 @@ def iniciar_scraper_linkedin():
         if driver:
             driver.quit()
             print("  Selenium driver closed.")
+            tmp_dir = getattr(driver, '_tmp_profile_dir', None)
+            if tmp_dir and os.path.exists(tmp_dir):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 if __name__ == '__main__':

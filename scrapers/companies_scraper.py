@@ -34,18 +34,19 @@ CONFIG_PATH = os.environ.get(
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from automation.profile_fetcher import get_target_roles, get_negative_keywords, get_user_id, strict_keyword_match
-    KEYWORDS = [r.lower() for r in get_target_roles()]
+    from automation.profile_fetcher import get_job_titles, get_negative_keywords, get_user_id, strict_keyword_match
+    KEYWORDS = [r.lower() for r in get_job_titles()]
     NEGATIVE_KEYWORDS = get_negative_keywords()
     USER_ID = get_user_id()
 except ImportError:
     print("Warning: Could not load profile_fetcher. Using default keywords.")
-    KEYWORDS = ["python", "developer"]
+    KEYWORDS = ["developer"]
     NEGATIVE_KEYWORDS = []
     USER_ID = "Unknown"
+    strict_keyword_match = lambda text, keywords: any(k in text.lower() for k in keywords)
 
 from automation.db_helper import save_job, job_exists
-from scrapers._shared import negative_keyword_match, make_session
+from scrapers._shared import negative_keyword_match, make_session, extract_seniority
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -350,13 +351,16 @@ def _pick_strategy(company: dict):
 
 
 def _passes_keyword_filters(job: dict) -> tuple[bool, str]:
-    """Returns (passes, reason). Reason is empty when passes=True."""
-    haystack = f"{job['titulo']} {job['descricao_completa'][:300]}".lower()
+    """Returns (passes, reason). Reason is empty when passes=True.
+    Filter uses job TITLE only — description matching causes false positives
+    (e.g. 'Software Engineer' passing a CTO filter because desc says 'technology').
+    """
+    title = job['titulo'].lower()
 
-    if KEYWORDS and not strict_keyword_match(haystack, KEYWORDS):
+    if KEYWORDS and not strict_keyword_match(title, KEYWORDS):
         return False, 'no keyword match'
 
-    blocked = negative_keyword_match(haystack, NEGATIVE_KEYWORDS)
+    blocked = negative_keyword_match(title, NEGATIVE_KEYWORDS)
     if blocked:
         return False, f"negative keyword '{blocked}'"
 
@@ -417,6 +421,7 @@ def iniciar_scraper_companies():
             continue
 
         kept = 0
+        seen_titles_this_company: set = set()
         for job in jobs:
             if not job['titulo'] or not job['link']:
                 continue
@@ -424,6 +429,12 @@ def iniciar_scraper_companies():
             passes, reason = _passes_keyword_filters(job)
             if not passes:
                 continue
+
+            # Deduplicate multi-office postings (same title, different city IDs)
+            title_key = job['titulo'].strip().lower()
+            if title_key in seen_titles_this_company:
+                continue
+            seen_titles_this_company.add(title_key)
 
             if job_exists(job['link']):
                 continue
@@ -442,7 +453,7 @@ def iniciar_scraper_companies():
                 observacoes=job['observacoes'],
                 salario=job['salario'],
                 tipo_contrato=job['tipo_contrato'],
-                nivel_experiencia='',
+                nivel_experiencia=extract_seniority(job['titulo'], job.get('descricao_completa', '')),
             )
             if ok:
                 kept += 1

@@ -77,7 +77,7 @@
     "domain": "https://gocardless.com",
     "careers_url": "https://job-boards.greenhouse.io/gocardless",
     "greenhouse_board": "gocardless",
-    "greenhouse_location_filter": "lisbon|lisboa|portugal|remote",
+    "greenhouse_location_filter": "lisbon",
     "category": "fintech",
     "city": "Lisboa"
   },
@@ -86,9 +86,10 @@
     "slug": "mollie",
     "domain": "https://www.mollie.com",
     "careers_url": "https://jobs.mollie.com/vacancies",
+    "ashby_board": "mollie",
+    "ashby_location_filter": "lisbon|lisboa|porto|portugal|remote",
     "category": "fintech",
-    "city": "Lisboa",
-    "job_selector": "a[href*='/vacancies/']"
+    "city": "Lisboa"
   },
   {
     "name": "Pictet Technologies",
@@ -176,9 +177,10 @@
     "slug": "farfetch",
     "domain": "https://www.farfetch.com",
     "careers_url": "https://www.farfetch.com/pt/careers",
+    "lever_board": "farfetch",
+    "lever_location_filter": "porto|portugal|lisbon|lisboa|remote",
     "category": "ecommerce",
-    "city": "Porto",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "city": "Porto"
   },
   {
     "name": "Feedzai",
@@ -195,9 +197,10 @@
     "slug": "talkdesk",
     "domain": "https://www.talkdesk.com",
     "careers_url": "https://www.talkdesk.com/careers/",
+    "ashby_board": "talkdesk",
+    "ashby_location_filter": "lisboa|porto|portugal|remote",
     "category": "software",
-    "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "city": "Lisboa"
   },
   {
     "name": "Unbabel",
@@ -214,7 +217,7 @@
     "domain": "https://swordhealth.com",
     "careers_url": "https://swordhealth.com/careers",
     "lever_board": "swordhealth",
-    "lever_location_filter": "porto|portugal|lisboa|lisbon|remote",
+    "lever_location_filter": "porto|portugal|lisboa|lisbon|remote (pt)",
     "category": "healthtech",
     "city": "Porto"
   },
@@ -232,18 +235,20 @@
     "slug": "catawiki",
     "domain": "https://www.catawiki.com",
     "careers_url": "https://catawiki.careers/vacancies",
+    "greenhouse_board": "catawiki",
+    "greenhouse_location_filter": "lisbon|lisboa|porto|portugal|remote",
     "category": "ecommerce",
-    "city": "Lisboa",
-    "job_selector": "a[href*='vacanc'], a[href*='job']"
+    "city": "Lisboa"
   },
   {
     "name": "Snyk",
     "slug": "snyk",
     "domain": "https://snyk.io",
     "careers_url": "https://snyk.io/pt-BR/careers/all-jobs/?location=Portugal",
+    "ashby_board": "snyk",
+    "ashby_location_filter": "lisbon|lisboa|portugal|remote|emea",
     "category": "ciberseguranca",
-    "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "city": "Lisboa"
   },
   {
     "name": "Upwork",
@@ -251,7 +256,7 @@
     "domain": "https://www.upwork.com",
     "careers_url": "https://www.upwork.com/careers/jobs/explore",
     "greenhouse_board": "upwork",
-    "greenhouse_location_filter": "lisbon|portugal|remote-europe|emea",
+    "greenhouse_location_filter": "lisbon|portugal|remote-europe",
     "category": "software",
     "city": "Lisboa"
   },
@@ -260,9 +265,10 @@
     "slug": "critical-techworks",
     "domain": "https://www.criticaltechworks.com",
     "careers_url": "https://www.criticaltechworks.com/positions",
+    "greenhouse_board": "criticaltechworks",
+    "greenhouse_location_filter": "porto|portugal",
     "category": "automotive_tech",
-    "city": "Porto",
-    "job_selector": "a[href*='position'], a[href*='job'], a[href*='career']"
+    "city": "Porto"
   },
   {
     "name": "Mercedes-Benz.io",
@@ -379,9 +385,10 @@
     "slug": "carbyne",
     "domain": "https://carbyne.com",
     "careers_url": "https://carbyne.com/company/careers/",
+    "ashby_board": "carbyne",
+    "ashby_location_filter": "lisbon|lisboa|portugal|remote",
     "category": "seguranca_publica",
-    "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "city": "Lisboa"
   },
   {
     "name": "TUI Portugal",
@@ -597,9 +604,10 @@
     "slug": "wellhub",
     "domain": "https://wellhub.com",
     "careers_url": "https://wellhub.com/careers/",
+    "greenhouse_board": "gympass",
+    "greenhouse_location_filter": "lisbon|lisboa|porto|portugal",
     "category": "healthtech",
-    "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career'], a[href*='position']"
+    "city": "Lisboa"
   },
   {
     "name": "Moxie",
@@ -616,9 +624,10 @@
     "slug": "viator-tripadvisor",
     "domain": "https://www.viator.com",
     "careers_url": "https://careers.tripadvisor.com/jobs?location=Lisbon%2C+Portugal",
+    "greenhouse_board": "tripadvisor",
+    "greenhouse_location_filter": "lisbon|lisboa|portugal|remote",
     "category": "turismo",
-    "city": "Lisboa",
-    "job_selector": "a[href*='careers.tripadvisor.com/jobs'], a[href*='job']"
+    "city": "Lisboa"
   },
   {
     "name": "Cyncly",
@@ -635,7 +644,7 @@
     "domain": "https://www.typeform.com",
     "careers_url": "https://www.typeform.com/careers/",
     "greenhouse_board": "typeform",
-    "greenhouse_location_filter": "portugal|emea|europe|remote",
+    "greenhouse_location_filter": "portugal|emea|europe",
     "category": "remote",
     "city": null,
     "remote_company": true
@@ -646,7 +655,7 @@
     "domain": "https://canonical.com",
     "careers_url": "https://canonical.com/careers",
     "greenhouse_board": "canonical",
-    "greenhouse_location_filter": "emea|worldwide|europe",
+    "greenhouse_location_filter": "emea|worldwide",
     "category": "remote",
     "city": null,
     "remote_company": true
@@ -657,7 +666,7 @@
     "domain": "https://about.gitlab.com",
     "careers_url": "https://about.gitlab.com/jobs/",
     "greenhouse_board": "gitlab",
-    "greenhouse_location_filter": "emea|europe|remote",
+    "greenhouse_location_filter": "emea|europe",
     "category": "remote",
     "city": null,
     "remote_company": true
@@ -690,7 +699,7 @@
     "domain": "https://www.salsify.com",
     "careers_url": "https://www.salsify.com/careers",
     "greenhouse_board": "salsify",
-    "greenhouse_location_filter": "portugal|lisbon|lisboa",
+    "greenhouse_location_filter": "portugal|lisbon",
     "category": "remote",
     "city": null,
     "remote_company": true
@@ -701,7 +710,7 @@
     "domain": "https://wellhub.com",
     "careers_url": "https://wellhub.com/careers/",
     "greenhouse_board": "gympass",
-    "greenhouse_location_filter": "portugal|lisboa|lisbon",
+    "greenhouse_location_filter": "portugal",
     "category": "remote",
     "city": null,
     "remote_company": true
@@ -746,5 +755,99 @@
     "category": "software",
     "city": "Lisboa",
     "job_selector": "a[href*='careers.microsoft.com/global/en/job']"
+  },
+  {
+    "name": "Blip.pt",
+    "slug": "blip-pt",
+    "domain": "https://blip.pt",
+    "careers_url": "https://job-boards.greenhouse.io/blip",
+    "greenhouse_board": "blip",
+    "greenhouse_location_filter": "portugal|porto|lisboa|remote",
+    "category": "tech",
+    "city": "Porto"
+  },
+  {
+    "name": "Prozis",
+    "slug": "prozis",
+    "domain": "https://www.prozis.com",
+    "careers_url": "https://www.prozis.com/pt/pt/jobs",
+    "category": "ecommerce",
+    "city": "Braga",
+    "job_selector": "a[href*='job'], a[href*='career']"
+  },
+  {
+    "name": "SumUp",
+    "slug": "sumup",
+    "domain": "https://sumup.com",
+    "careers_url": "https://sumup.com/careers/",
+    "greenhouse_board": "sumup",
+    "greenhouse_location_filter": "lisbon|lisboa|porto|portugal",
+    "category": "fintech",
+    "city": "Lisboa"
+  },
+  {
+    "name": "Trustly",
+    "slug": "trustly",
+    "domain": "https://trustly.com",
+    "careers_url": "https://trustly.com/careers",
+    "lever_board": "trustly",
+    "lever_location_filter": "lisbon|lisboa|portugal",
+    "category": "fintech",
+    "city": "Lisboa"
+  },
+  {
+    "name": "Cloudflare",
+    "slug": "cloudflare",
+    "domain": "https://cloudflare.com",
+    "careers_url": "https://cloudflare.com/careers/",
+    "greenhouse_board": "cloudflare",
+    "greenhouse_location_filter": "lisbon|lisboa|porto|portugal|emea|europe",
+    "category": "software",
+    "city": null,
+    "remote_company": true
+  },
+  {
+    "name": "Linear",
+    "slug": "linear",
+    "domain": "https://linear.app",
+    "careers_url": "https://linear.app/careers",
+    "ashby_board": "linear",
+    "ashby_location_filter": "europe|emea|remote",
+    "category": "software",
+    "city": null,
+    "remote_company": true
+  },
+  {
+    "name": "Deel",
+    "slug": "deel",
+    "domain": "https://deel.com",
+    "careers_url": "https://deel.com/careers",
+    "ashby_board": "deel",
+    "ashby_location_filter": "emea|europe|remote",
+    "category": "software",
+    "city": null,
+    "remote_company": true
+  },
+  {
+    "name": "Wrike",
+    "slug": "wrike",
+    "domain": "https://wrike.com",
+    "careers_url": "https://wrike.com/careers/",
+    "greenhouse_board": "wrike",
+    "greenhouse_location_filter": "portugal|lisbo|emea|europe",
+    "category": "software",
+    "city": null,
+    "remote_company": true
+  },
+  {
+    "name": "Datadog",
+    "slug": "datadog",
+    "domain": "https://datadoghq.com",
+    "careers_url": "https://datadoghq.com/careers/",
+    "greenhouse_board": "datadog",
+    "greenhouse_location_filter": "portugal|lisbo|emea|europe",
+    "category": "software",
+    "city": null,
+    "remote_company": true
   }
 ]

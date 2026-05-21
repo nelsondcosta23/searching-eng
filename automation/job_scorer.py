@@ -15,8 +15,9 @@ import random
 from collections import Counter
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from automation.profile_fetcher import get_search_description, get_profile_filters, get_target_roles, get_user_id
+from automation.profile_fetcher import get_search_description, get_profile_filters, get_target_roles, get_user_id, get_negative_keywords
 from automation.db_helper import transaction
+from scrapers._shared import extract_seniority, extract_salary_from_text, negative_keyword_match
 
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 
@@ -49,13 +50,26 @@ def _build_profile_terms() -> dict[str, float]:
     """
     weights: dict[str, float] = {}
 
-    # Role titles — very high weight (exact match = most relevant)
+    # Generic single-word tokens that appear in almost any tech job description.
+    # They help rank CTO jobs above non-tech jobs, but should not inflate SE jobs
+    # to the same score as CTO jobs when the job TITLE clearly matches.
+    _GENERIC_TOKENS = {
+        'tech', 'technology', 'technical', 'product', 'head', 'lead', 'leader',
+        'leadership', 'development', 'officer', 'director', 'manager', 'engineering',
+        'engineer', 'software', 'digital', 'data', 'cloud', 'platform', 'strategy',
+        'strategic',
+    }
+
+    # Role titles — very high weight for discriminative tokens, low for generic ones
     for role in get_target_roles():
         for token in _tokenize(role):
-            weights[token] = max(weights.get(token, 0), 10.0)
-        # Also add the full role as a phrase-key for exact phrase bonus
+            if token in _GENERIC_TOKENS:
+                weights[token] = max(weights.get(token, 0), 2.0)
+            else:
+                weights[token] = max(weights.get(token, 0), 10.0)
+        # Full role phrase match gives strong bonus regardless of individual tokens
         phrase_key = role.lower().strip()
-        weights[f'__phrase__{phrase_key}'] = 15.0
+        weights[f'__phrase__{phrase_key}'] = 20.0
 
     filters = get_profile_filters()
 
@@ -77,29 +91,65 @@ def _build_profile_terms() -> dict[str, float]:
     return weights
 
 
+_SALARY_NUMBER_RE = re.compile(
+    r'[\$€£]?\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?)\s*[kK]?[\$€£]?'
+)
+
+
+def _parse_salary_value(text: str) -> int:
+    """Parse a salary string to an integer annual value in the original currency.
+
+    Returns 0 when no value can be extracted.
+    Examples:
+      'EUR 50.000–73.000' → 50000  (lower bound)
+      '€50k'              → 50000
+      '80k EUR'           → 80000
+      '65.000€'           → 65000
+    """
+    if not text:
+        return 0
+    # Handle 'k' multiplier first (e.g. '50k', '80k EUR')
+    k_match = re.search(r'(\d+)\s*[kK]', text)
+    if k_match:
+        return int(k_match.group(1)) * 1000
+    # Parse European/US notation: strip thousand separators (.,) then extract
+    # the first complete integer. Avoids the \d{1,3} regex truncation bug where
+    # "65000" (after stripping "65.000") was matched as "650" instead of "65000".
+    cleaned = re.sub(r'[.,]', '', text)
+    m = re.search(r'\d{4,}', cleaned)  # require at least 4 digits (salary ≥ 1000)
+    if m:
+        try:
+            return int(m.group(0))
+        except ValueError:
+            pass
+    return 0
+
+
 def _score_job(titulo: str, empresa: str, descricao: str, observacoes: str,
-               profile_terms: dict[str, float]) -> int:
+               profile_terms: dict[str, float],
+               min_salary: int = 0,
+               job_salary_text: str = '',
+               profile_seniority: list = None,
+               negative_keywords: list = None) -> int:
     """
     Computes a relevance score (0–100) for a single job.
 
     Scoring strategy:
-      - Title match:       weight × 4  (most signal)
-      - Observations match: weight × 2  (structured metadata)
-      - Description match: weight × 1  (broad context)
+      - Title match:         weight × 4  (most signal)
+      - Observations match:  weight × 2  (structured metadata)
+      - Description match:   weight × 1  (broad context)
+      - Salary modifier:     ±10/−25 vs min_salary threshold
+      - Seniority match:     +8 when job level matches profile preference
     """
-    # Combine all text fields
-    title_tokens   = _tokenize(titulo)
-    obs_tokens     = _tokenize(observacoes)
-    desc_tokens    = _tokenize(descricao)
+    title_tokens = _tokenize(titulo)
+    obs_tokens   = _tokenize(observacoes)
+    desc_tokens  = _tokenize(descricao)
 
     raw_score = 0.0
-
-    # Token-level scoring
     all_text_lower = f"{titulo} {observacoes} {descricao}".lower()
 
     for term, weight in profile_terms.items():
         if term.startswith('__phrase__'):
-            # Exact phrase match bonus with word boundaries
             phrase = term.replace('__phrase__', '')
             if re.search(r'\b' + re.escape(phrase) + r'\b', all_text_lower):
                 raw_score += weight
@@ -111,9 +161,37 @@ def _score_job(titulo: str, empresa: str, descricao: str, observacoes: str,
             if term in desc_tokens:
                 raw_score += weight * 1
 
-    # Normalize to 0–100 (cap at 100)
-    # Increased scale base from 50 to 90 to make 100% harder to reach
-    normalized = min(100, int((raw_score / 90.0) * 100))
+    # Normalize to 0–100 base
+    normalized = min(100, int((raw_score / 150.0) * 100))
+
+    # --- Salary modifier ---
+    if min_salary > 0:
+        salary_val = _parse_salary_value(job_salary_text)
+        if salary_val > 0:
+            if salary_val >= min_salary:
+                normalized = min(100, normalized + 10)   # meets expectation → boost
+            elif salary_val < min_salary * 0.75:         # >25% below threshold → strong penalty
+                normalized = max(0, normalized - 25)
+            else:                                         # slightly below → mild penalty
+                normalized = max(0, normalized - 10)
+
+    # --- Seniority match modifier ---
+    if profile_seniority:
+        job_level = extract_seniority(titulo, descricao[:300])
+        if job_level:
+            norm_level = job_level.lower()
+            matches = any(
+                norm_level in ps.lower() or ps.lower() in norm_level
+                for ps in profile_seniority
+            )
+            if matches:
+                normalized = min(100, normalized + 8)
+
+    # --- Negative keyword penalty (cap score at 15 for jobs that should be filtered) ---
+    # Handles jobs saved BEFORE negative_keywords were added to the profile.
+    if negative_keywords and negative_keyword_match(titulo.lower(), negative_keywords):
+        normalized = min(normalized, 15)
+
     return normalized
 
 
@@ -135,12 +213,24 @@ def score_and_update_unscored_jobs():
     profile_terms = _build_profile_terms()
     print(f"[scorer] Profile terms loaded: {len(profile_terms)} unique weighted terms.")
 
+    filters           = get_profile_filters()
+    min_salary        = int(filters.get('min_salary') or 0)
+    profile_seniority = list(filters.get('seniority_level') or [])
+    neg_keywords      = get_negative_keywords()
+    if min_salary:
+        print(f"[scorer] Salary filter active: min_salary={min_salary}")
+    if profile_seniority:
+        print(f"[scorer] Seniority filter active: {profile_seniority}")
+    if neg_keywords:
+        print(f"[scorer] Negative keywords active: {len(neg_keywords)} terms")
+
     # Phase 1: read candidates (short-lived read connection)
     with transaction(row_factory=sqlite3.Row) as conn:
         rows = conn.execute("""
             SELECT id, titulo, empresa,
                    COALESCE(descricao_completa, '') AS descricao_completa,
-                   COALESCE(observacoes, '')         AS observacoes
+                   COALESCE(observacoes, '')         AS observacoes,
+                   COALESCE(salario, '')             AS salario
             FROM vagas
             WHERE relevance_score IS NULL AND user_id = ?
         """, (user_id,)).fetchall()
@@ -160,6 +250,10 @@ def score_and_update_unscored_jobs():
             descricao=row['descricao_completa'],
             observacoes=row['observacoes'],
             profile_terms=profile_terms,
+            min_salary=min_salary,
+            job_salary_text=row['salario'] or '',
+            profile_seniority=profile_seniority,
+            negative_keywords=neg_keywords,
         )
         scored_pairs.append((score, row['id']))
 
@@ -195,6 +289,67 @@ def score_and_update_unscored_jobs():
             print(f"  {i}. [{job['relevance_score']:3d}] {job['titulo']} @ {job['empresa']} ({job['plataforma']})")
 
 
+def backfill_enrichment():
+    """Backfill nivel_experiencia and salario for existing jobs that are missing them.
+
+    Runs after scoring so it benefits from the same connection pattern.
+    Processes vagas that have a description but still have empty enrichment fields.
+    Safe to call repeatedly — only touches rows that need filling.
+    """
+    if not os.path.exists(DB_PATH):
+        return
+
+    user_id = get_user_id()
+
+    with transaction(row_factory=sqlite3.Row) as conn:
+        rows = conn.execute("""
+            SELECT id, titulo, descricao_completa, salario, nivel_experiencia
+            FROM vagas
+            WHERE user_id = ?
+              AND descricao_completa IS NOT NULL
+              AND LENGTH(descricao_completa) > 100
+              AND (
+                  nivel_experiencia IS NULL OR nivel_experiencia = ''
+                  OR salario IS NULL OR salario = ''
+              )
+        """, (user_id,)).fetchall()
+
+    if not rows:
+        print("[enrichment] All enrichable rows already filled. Nothing to do.")
+        return
+
+    print(f"[enrichment] Backfilling {len(rows)} rows with nivel_experiencia / salario...")
+
+    updated_nivel = 0
+    updated_sal = 0
+    pairs = []
+    for row in rows:
+        new_nivel = row['nivel_experiencia'] or ''
+        new_sal   = row['salario'] or ''
+
+        if not new_nivel:
+            new_nivel = extract_seniority(row['titulo'] or '', row['descricao_completa'] or '')
+            if new_nivel:
+                updated_nivel += 1
+
+        if not new_sal:
+            new_sal = extract_salary_from_text(row['descricao_completa'] or '')
+            if new_sal:
+                updated_sal += 1
+
+        if new_nivel != (row['nivel_experiencia'] or '') or new_sal != (row['salario'] or ''):
+            pairs.append((new_nivel or None, new_sal or None, row['id']))
+
+    if pairs:
+        with transaction() as conn:
+            conn.executemany(
+                "UPDATE vagas SET nivel_experiencia = ?, salario = ? WHERE id = ?",
+                pairs,
+            )
+
+    print(f"[enrichment] ✅ nivel_experiencia filled: {updated_nivel} | salario filled: {updated_sal}")
+
+
 def rescore_all_jobs():
     """Force-rescores ALL jobs in the database (useful after profile update).
 
@@ -215,8 +370,10 @@ def rescore_all_jobs():
 
 
 if __name__ == '__main__':
-    import sys
     if '--rescore-all' in sys.argv:
         rescore_all_jobs()
+    elif '--backfill' in sys.argv:
+        backfill_enrichment()
     else:
         score_and_update_unscored_jobs()
+        backfill_enrichment()

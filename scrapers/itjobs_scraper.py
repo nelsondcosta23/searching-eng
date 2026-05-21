@@ -26,18 +26,23 @@ API_BASE = "https://api.itjobs.pt"
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from automation.profile_fetcher import get_target_roles, get_negative_keywords, get_user_id, strict_keyword_match
-    KEYWORDS = [r.lower() for r in get_target_roles()]
+    from automation.profile_fetcher import get_negative_keywords, get_user_id, strict_keyword_match, get_local_profile
+    _profile = get_local_profile()
+    # Use the raw job_titles from the profile — no enriched combos ("cto ai", etc.).
+    # ITJobs full-text search is good enough with plain titles; enriched queries
+    # add noise and return zero results for leadership roles.
+    KEYWORDS = [t.lower() for t in (_profile.get('job_titles') or [])] or ["developer"]
     NEGATIVE_KEYWORDS = get_negative_keywords()
     USER_ID = get_user_id()
 except ImportError:
     print("Warning: Could not load profile_fetcher. Using default keywords.")
-    KEYWORDS = ["python", "developer"]
+    KEYWORDS = ["developer"]
     NEGATIVE_KEYWORDS = []
     USER_ID = "Unknown"
+    strict_keyword_match = lambda text, keywords: any(k in text.lower() for k in keywords)
 
 from automation.db_helper import save_job, job_exists
-from scrapers._shared import negative_keyword_match, make_session
+from scrapers._shared import negative_keyword_match, make_session, extract_seniority
 
 HEADERS = {
     'User-Agent': 'SearchingEng-ITJobsScraper/1.0',
@@ -91,6 +96,8 @@ def _normalize_job(raw: dict, fallback_query: str) -> dict:
     work_label = _WORK_MODEL_LABELS.get(work_model, '')
 
     country = raw.get('country') or 'PT'
+    # City names come from the detail endpoint; filled later before save.
+    # For now build a fallback from country + work model.
     if work_label == "Remoto":
         localizacao = f"{country} (Remoto)"
     elif work_label:
@@ -133,13 +140,39 @@ def _normalize_job(raw: dict, fallback_query: str) -> dict:
     }
 
 
-def _fetch_page(query: str, page: int) -> dict:
+def _fetch_location(job_id: int) -> str:
+    """Fetches city names for a job via the detail endpoint.
+
+    The search endpoint only returns country code; the detail endpoint has
+    a `locations` array with district/city names like 'Lisboa', 'Porto'.
+    Only called for jobs we're actually going to save (not wasted on rejects).
+    """
+    try:
+        resp = session.get(
+            f"{API_BASE}/job/get.json",
+            params={'api_key': ITJOBS_API_KEY, 'id': job_id},
+            headers=HEADERS,
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return ''
+        data = resp.json() or {}
+        locs = data.get('locations') or []
+        names = [l.get('name') for l in locs if isinstance(l, dict) and l.get('name')]
+        return ', '.join(names)
+    except Exception:
+        return ''
+
+
+def _fetch_page(query: str, page: int, work_model: int = 0) -> dict:
     params = {
         'api_key': ITJOBS_API_KEY,
         'q': query,
         'limit': ITJOBS_PAGE_LIMIT,
         'page': page,
     }
+    if work_model:
+        params['workModel'] = work_model
     try:
         resp = session.get(f"{API_BASE}/job/search.json", params=params, headers=HEADERS, timeout=15)
         if resp.status_code != 200:
@@ -186,6 +219,10 @@ def iniciar_scraper_itjobs():
         print(f"\n[ITJobs] Search: {q}")
         for page in range(1, ITJOBS_MAX_PAGES + 1):
             time.sleep(random.uniform(0.5, 1.0))
+            # No workModel filter — return all work models and let the scorer
+            # handle the remote preference. Filtering by workModel=2 here causes
+            # leadership queries ("cto", "chief technology officer") to return 0
+            # results since most PT CTO roles are hybrid, not fully remote.
             data = _fetch_page(q, page=page)
             results = data.get('results') if isinstance(data, dict) else None
 
@@ -199,7 +236,7 @@ def iniciar_scraper_itjobs():
                 if not job['titulo'] or not job['link']:
                     continue
 
-                texto_busca = f"{job['titulo']} {job['descricao_completa'][:300]}".lower()
+                texto_busca = job['titulo'].lower()
 
                 if not strict_keyword_match(texto_busca, KEYWORDS):
                     continue
@@ -211,7 +248,17 @@ def iniciar_scraper_itjobs():
                 if job_exists(job['link']):
                     continue
 
-                print(f"  [NEW JOB] {job['titulo']} @ {job['empresa']}")
+                # Fetch city names from detail endpoint (only for new jobs)
+                city_names = _fetch_location(int(job['id_externo'])) if job['id_externo'] else ''
+                if city_names:
+                    work_suffix = ''
+                    if '(Remoto)' in job['localizacao']:
+                        work_suffix = ' (Remoto)'
+                    elif '(Híbrido)' in job['localizacao']:
+                        work_suffix = ' (Híbrido)'
+                    job['localizacao'] = city_names + work_suffix
+
+                print(f"  [NEW JOB] {job['titulo']} @ {job['empresa']} | {job['localizacao']}")
 
                 salvo = save_job(
                     user_id=USER_ID,
@@ -227,7 +274,7 @@ def iniciar_scraper_itjobs():
                     observacoes=job['observacoes'],
                     salario=job['salario'],
                     tipo_contrato=job['tipo_contrato'],
-                    nivel_experiencia='',
+                    nivel_experiencia=extract_seniority(job['titulo'], job['descricao_completa']),
                 )
                 if salvo:
                     vagas_inseridas += 1
