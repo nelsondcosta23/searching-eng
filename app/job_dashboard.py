@@ -304,20 +304,19 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    /* Hide Streamlit branding without touching the sidebar collapse/expand button */
-    [data-testid="stToolbar"]    { visibility: hidden; }
-    [data-testid="stDecoration"] { display: none; }
-    [data-testid="stStatusWidget"] { visibility: hidden; }
+    /* Remove only specific Streamlit branding — never touch toolbar/header containers
+       because the sidebar expand arrow lives inside them in Streamlit 1.50 */
     .stAppDeployButton           { display: none !important; }
     #MainMenu                    { visibility: hidden; }
     footer                       { visibility: hidden; }
+    [data-testid="stDecoration"] { display: none !important; }
 
-    /* Always show the sidebar expand arrow (visible when sidebar is collapsed) */
-    [data-testid="stSidebarCollapsedControl"] {
-        display: flex !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-        pointer-events: auto !important;
+    /* Make the header bar transparent so it takes no visual space
+       while keeping its interactive children (sidebar toggle) alive */
+    [data-testid="stHeader"] {
+        background: transparent !important;
+        border-bottom: none !important;
+        box-shadow: none !important;
     }
 
     .block-container { padding-top: 2.5rem !important; padding-bottom: 0 !important; }
