@@ -100,7 +100,7 @@ def get_local_profile(user_id=None):
         conn = sqlite3.connect(_DB_PATH, timeout=5)
         conn.row_factory = sqlite3.Row
 
-        _cols = "user_id, keywords, negative_keywords, job_titles, locations, is_remote, min_salary, experience_levels"
+        _cols = "user_id, keywords, negative_keywords, job_titles, locations, is_remote, min_salary, experience_levels, job_profile"
         if target_uid:
             row = conn.execute(
                 f"SELECT {_cols} FROM users_perfil WHERE user_id = ? AND is_active = 1",
@@ -128,10 +128,12 @@ def get_local_profile(user_id=None):
                 result['is_remote']         = bool(row['is_remote'])
                 result['min_salary']        = int(row['min_salary']) if row['min_salary'] else 0
                 result['experience_levels'] = [e.strip() for e in (row['experience_levels'] or '').split(',') if e.strip()]
+                result['job_profile']       = (row['job_profile'] or 'generalist').lower().strip()
             except Exception:
                 result['is_remote']         = False
                 result['min_salary']        = 0
                 result['experience_levels'] = []
+                result['job_profile']       = 'generalist'
 
             if any([result['keywords'], result['negative_keywords'], result['job_titles']]):
                 print(f"[profile_fetcher] Local profile loaded for '{result['user_id']}': "

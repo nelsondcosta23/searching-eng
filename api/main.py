@@ -236,6 +236,12 @@ class StatsResponse(BaseModel):
     jobs_today: int
     generated_at: str
 
+def _valid_job_profiles() -> list[str]:
+    """Returns the list of valid job_profile values from VALID_JOB_PROFILES env var."""
+    raw = os.environ.get('VALID_JOB_PROFILES', 'generalist')
+    return [p.strip().lower() for p in raw.split(',') if p.strip()]
+
+
 class UserProfile(BaseModel):
     user_id: str
     is_active: bool = True
@@ -246,6 +252,9 @@ class UserProfile(BaseModel):
     experience_levels: Optional[List[str]] = []
     keywords: Optional[List[str]] = []
     negative_keywords: Optional[List[str]] = []
+    job_profile: Optional[str] = "generalist"
+    """Defines which scrapers run for this user. Must be one of the values
+    returned by GET /api/v1/profiles. Unknown values fall back to 'generalist'."""
     callback_url: Optional[str] = None   # Webhook URL to push job results
 
 
@@ -474,6 +483,29 @@ def get_stats(
     )
 
 
+@app.get("/api/v1/profiles", tags=["Users"])
+def list_job_profiles():
+    """Returns the valid `job_profile` values and which scrapers each activates.
+
+    Call this endpoint to know exactly what to send in the `job_profile` field
+    of POST /api/v1/users/sync. Unknown values fall back to `generalist`.
+    """
+    profiles = _valid_job_profiles()
+    result = {}
+    for p in profiles:
+        key = f'SCRAPERS_{p.upper()}'
+        raw = os.environ.get(key, os.environ.get('SCRAPERS_GENERALIST', ''))
+        scrapers = [s.strip() for s in raw.split(',') if s.strip()]
+        # Strip .py suffix for a cleaner response
+        result[p] = [s.replace('_scraper.py', '').replace('_', ' ').title() for s in scrapers]
+    return {
+        "valid_profiles": profiles,
+        "fallback": "generalist",
+        "note": "Send one of the valid_profiles values in the job_profile field. Unknown values use 'generalist'.",
+        "profiles": result,
+    }
+
+
 @app.post("/api/v1/users/sync", tags=["Users"])
 def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_key)):
     """Upsert user scraping profile preferences.
@@ -494,16 +526,27 @@ def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_ke
     # SSRF: ensure callback_url cannot pivot the dispatcher into internal infra.
     profile.callback_url = _validate_callback_url(profile.callback_url)
 
+    # Normalise job_profile — unknown value → 'generalist'
+    valid_profiles = _valid_job_profiles()
+    raw_profile = (profile.job_profile or 'generalist').lower().strip()
+    job_profile_norm = raw_profile if raw_profile in valid_profiles else 'generalist'
+    if job_profile_norm != raw_profile:
+        print(f"[sync] Unknown job_profile '{raw_profile}' → normalised to 'generalist'")
+
     # Convert lists to comma-separated strings for SQLite
-    job_titles_str = ", ".join(profile.job_titles) if profile.job_titles else ""
-    locations_str = ", ".join(profile.locations) if profile.locations else ""
-    exp_levels_str = ", ".join(profile.experience_levels) if profile.experience_levels else ""
-    keywords_str = ", ".join(profile.keywords) if profile.keywords else ""
-    negative_keywords_str = ", ".join(profile.negative_keywords) if profile.negative_keywords else ""
+    job_titles_str        = ", ".join(profile.job_titles)          if profile.job_titles          else ""
+    locations_str         = ", ".join(profile.locations)           if profile.locations           else ""
+    exp_levels_str        = ", ".join(profile.experience_levels)   if profile.experience_levels   else ""
+    keywords_str          = ", ".join(profile.keywords)            if profile.keywords            else ""
+    negative_keywords_str = ", ".join(profile.negative_keywords)   if profile.negative_keywords   else ""
 
     upsert_sql = '''
-        INSERT INTO users_perfil (user_id, is_active, job_titles, locations, is_remote, min_salary, experience_levels, keywords, negative_keywords, callback_url, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO users_perfil (
+            user_id, is_active, job_titles, locations, is_remote, min_salary,
+            experience_levels, keywords, negative_keywords, job_profile, callback_url,
+            created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id) DO UPDATE SET
             is_active=excluded.is_active,
             job_titles=excluded.job_titles,
@@ -513,6 +556,7 @@ def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_ke
             experience_levels=excluded.experience_levels,
             keywords=excluded.keywords,
             negative_keywords=excluded.negative_keywords,
+            job_profile=excluded.job_profile,
             callback_url=excluded.callback_url,
             updated_at=CURRENT_TIMESTAMP
     '''
@@ -526,6 +570,7 @@ def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_ke
         exp_levels_str,
         keywords_str,
         negative_keywords_str,
+        job_profile_norm,
         profile.callback_url,
     )
 

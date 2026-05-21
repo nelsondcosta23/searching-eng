@@ -75,6 +75,7 @@ try:
             is_remote           INTEGER DEFAULT 0,
             min_salary          INTEGER DEFAULT 0,
             experience_levels   TEXT,
+            job_profile         TEXT DEFAULT 'generalist',
             callback_url        TEXT,
             last_webhook_sent   TIMESTAMP,
             created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -90,6 +91,7 @@ try:
         ("callback_url",        "TEXT"),
         ("last_webhook_sent",   "TIMESTAMP"),
         ("is_active",           "INTEGER DEFAULT 1"),
+        ("job_profile",         "TEXT DEFAULT 'generalist'"),
     ]
     for col_name, col_type in user_migrations:
         if col_name not in existing_user_cols:

@@ -30,30 +30,72 @@ SCRAPERS_DIR = os.path.join(BASE_DIR, 'scrapers')
 DB_PATH      = os.path.join(BASE_DIR, 'database', 'vagas.db')
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Scraper tiers — ordered best-to-worst by QA relevance score
+# Scraper registry — quality tier + execution mode per scraper file
+#
+# tier: 1 = best quality (run first), 2 = medium, 3 = last resort
+# mode: 'sequential' = Selenium (heavy, one at a time)
+#       'parallel'   = API/HTTP (cheap, safe to run concurrently)
+#
+# Which scrapers actually run for a user is determined by their `job_profile`
+# field (read from users_perfil) mapped via SCRAPERS_<PROFILE> env vars.
 # ─────────────────────────────────────────────────────────────────────────────
-# Tier 1: highest quality signal — run first, sequential (Selenium)
-TIER_1_SEQUENTIAL = [
-    ('Sapo Jobs',   'sapo_scraper.py'),      # QA score 72 — best avg relevance
-    ('LinkedIn PT', 'linkedin_scraper.py'),  # QA score 71 — real CTO/Lead roles
-]
+SCRAPER_REGISTRY: dict[str, dict] = {
+    'sapo_scraper.py':      {'name': 'Sapo Jobs',    'tier': 1, 'mode': 'sequential'},
+    'linkedin_scraper.py':  {'name': 'LinkedIn PT',  'tier': 1, 'mode': 'sequential'},
+    'companies_scraper.py': {'name': 'Companies',    'tier': 2, 'mode': 'parallel'},
+    'itjobs_scraper.py':    {'name': 'ITJobs',       'tier': 2, 'mode': 'parallel'},
+    'indeed_scraper.py':    {'name': 'Indeed PT',    'tier': 2, 'mode': 'sequential'},
+    'landing_scraper.py':   {'name': 'Landing.jobs', 'tier': 3, 'mode': 'parallel'},
+    'expresso_scraper.py':  {'name': 'Expresso Jobs','tier': 3, 'mode': 'sequential'},
+}
 
-# Tier 2: API-based, fast, reliable — run in parallel
-TIER_2_PARALLEL = [
-    ('Companies',    'companies_scraper.py'),  # QA score 64 — ATS APIs
-    ('ITJobs',       'itjobs_scraper.py'),      # QA score 55 — PT platform
-]
-
-# Tier 3: last resort — only if tiers 1+2 yielded too little
-TIER_3_SEQUENTIAL = [
-    ('Indeed PT',    'indeed_scraper.py'),   # QA score 58 — low yield
-    ('Landing.jobs', 'landing_scraper.py'),  # QA score 35 — poor relevance
-    ('Expresso Jobs','expresso_scraper.py'), # QA score 38 — very low yield
-]
-
-# Skip lower tiers when cumulative new jobs for this user reaches this threshold.
-# Env var allows per-deployment tuning without code changes.
+# Minimum new jobs per tier before skipping lower tiers
 MIN_TIER_YIELD = int(os.environ.get('MIN_TIER_YIELD', '5'))
+
+
+def get_scrapers_for_profile(job_profile: str) -> list[str]:
+    """Returns the scraper filenames for a given job_profile.
+
+    Reads SCRAPERS_<PROFILE> from env. Falls back to SCRAPERS_GENERALIST if
+    the profile is unknown or the env var is missing.
+    """
+    valid = [p.strip().lower() for p in os.environ.get('VALID_JOB_PROFILES', 'generalist').split(',')]
+    norm = (job_profile or 'generalist').lower().strip()
+    if norm not in valid:
+        print(f'  [profile] Unknown job_profile "{norm}" → using generalist')
+        norm = 'generalist'
+    key = f'SCRAPERS_{norm.upper()}'
+    raw = os.environ.get(key) or os.environ.get('SCRAPERS_GENERALIST', '')
+    scrapers = [s.strip() for s in raw.split(',') if s.strip()]
+    if not scrapers:
+        # Hard fallback — SCRAPERS_GENERALIST not in .env
+        scrapers = ['sapo_scraper.py', 'linkedin_scraper.py', 'indeed_scraper.py']
+        print(f'  [profile] SCRAPERS_GENERALIST missing from .env — using built-in fallback')
+    return scrapers
+
+
+def build_tiers(scraper_files: list[str]) -> tuple[list, list, list, list]:
+    """Splits scraper files into execution groups based on SCRAPER_REGISTRY.
+
+    Returns (tier1_seq, tier2_parallel, tier2_seq, tier3_mixed) where
+    tier2_parallel are API scrapers (run concurrently) and tier2_seq are
+    medium-quality Selenium scrapers (run one at a time).
+    Tier 3 combines parallel and sequential into a single sequential pass.
+    """
+    t1_seq, t2_par, t2_seq, t3 = [], [], [], []
+    for f in scraper_files:
+        info = SCRAPER_REGISTRY.get(f)
+        if not info:
+            print(f'  [registry] Unknown scraper "{f}" — skipped')
+            continue
+        entry = (info['name'], f)
+        if info['tier'] == 1:
+            t1_seq.append(entry)
+        elif info['tier'] == 2:
+            (t2_par if info['mode'] == 'parallel' else t2_seq).append(entry)
+        else:
+            t3.append(entry)
+    return t1_seq, t2_par, t2_seq, t3
 
 # Global lock — prevents two orchestrator instances from running simultaneously.
 GLOBAL_LOCK = os.path.join(BASE_DIR, 'database', 'orchestrator.lock')
@@ -63,21 +105,30 @@ GLOBAL_LOCK = os.path.join(BASE_DIR, 'database', 'orchestrator.lock')
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_active_users() -> list[str]:
-    """Returns all active user_ids from users_perfil.
+def get_active_users() -> list[dict]:
+    """Returns all active users with their job_profile from users_perfil.
 
-    If TARGET_USER_ID is set in the environment (e.g. for a manual run),
-    returns only that user — no DB query needed.
+    Each entry: {'user_id': str, 'job_profile': str}
+    If TARGET_USER_ID env is set, returns only that user (manual run mode).
     """
     override = os.environ.get('TARGET_USER_ID', '').strip()
     if override:
-        return [override]
+        # Fetch job_profile for this specific user
+        try:
+            with sqlite3.connect(DB_PATH, timeout=10) as c:
+                row = c.execute(
+                    'SELECT job_profile FROM users_perfil WHERE user_id = ?', (override,)
+                ).fetchone()
+                profile = (row[0] or 'generalist') if row else 'generalist'
+        except Exception:
+            profile = 'generalist'
+        return [{'user_id': override, 'job_profile': profile}]
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as c:
             rows = c.execute(
-                'SELECT user_id FROM users_perfil WHERE is_active = 1 ORDER BY created_at'
+                'SELECT user_id, COALESCE(job_profile, "generalist") FROM users_perfil WHERE is_active = 1 ORDER BY created_at'
             ).fetchall()
-            return [r[0] for r in rows if r[0]]
+            return [{'user_id': r[0], 'job_profile': r[1]} for r in rows if r[0]]
     except Exception as e:
         print(f'[orchestrator] Could not load users from DB: {e}')
         return []
@@ -219,52 +270,69 @@ def _check_zero_yield(results: dict, user_id: str, run_start: datetime):
 # Per-user scraping run
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_for_user(user_id: str) -> dict:
+def run_for_user(user_id: str, job_profile: str = 'generalist') -> dict:
     """Runs tiered scraping + post-processing for a single user.
+
+    Scraper selection is dynamic: reads SCRAPERS_<JOB_PROFILE> from env,
+    maps each scraper to its quality tier via SCRAPER_REGISTRY, then runs
+    tiers in order with early exit when MIN_TIER_YIELD is reached.
 
     Returns combined scraper results dict.
     """
     os.environ['TARGET_USER_ID'] = user_id
-    uid_short = user_id[:8]
-    run_start = datetime.now()
+    uid_short  = user_id[:8]
+    run_start  = datetime.now()
+
+    scrapers = get_scrapers_for_profile(job_profile)
+    t1_seq, t2_par, t2_seq, t3 = build_tiers(scrapers)
 
     print(f"\n{'#'*60}")
     print(f"# USER: {user_id}")
+    print(f"# Profile: {job_profile}  |  Scrapers: {len(scrapers)}")
     print(f"# Start: {run_start.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"# MIN_TIER_YIELD: {MIN_TIER_YIELD} new jobs per tier")
+    print(f"# Tier 1: {[n for n,_ in t1_seq] or '—'}")
+    print(f"# Tier 2: {[n for n,_ in t2_par+t2_seq] or '—'}")
+    print(f"# Tier 3: {[n for n,_ in t3] or '—'}")
+    print(f"# MIN_TIER_YIELD: {MIN_TIER_YIELD}")
     print(f"{'#'*60}")
 
     all_results: dict = {}
 
-    # ── Tier 1: Best quality (Selenium) ────────────────────────────────────
-    print(f"\n{'#'*55}")
-    print(f"# TIER 1 — Quality scrapers: {[n for n,_ in TIER_1_SEQUENTIAL]}")
-    print(f"{'#'*55}")
-    all_results.update(run_sequential(TIER_1_SEQUENTIAL))
+    # ── Tier 1: Best quality (Selenium) ─────────────────────────────────────
+    if t1_seq:
+        print(f"\n{'#'*55}")
+        print(f"# TIER 1 — {[n for n,_ in t1_seq]}")
+        print(f"{'#'*55}")
+        all_results.update(run_sequential(t1_seq))
     tier1_jobs = count_new_jobs(user_id, run_start)
-    print(f'\n[tier1] New jobs found: {tier1_jobs}')
+    print(f'\n[tier1] New jobs: {tier1_jobs}')
 
     if tier1_jobs >= MIN_TIER_YIELD:
-        print(f'[tier1] ✅ Threshold met ({tier1_jobs} ≥ {MIN_TIER_YIELD}) — skipping Tiers 2 & 3')
+        print(f'[tier1] ✅ {tier1_jobs} ≥ {MIN_TIER_YIELD} — skipping Tiers 2 & 3')
     else:
-        # ── Tier 2: API scrapers (fast) ─────────────────────────────────────
-        print(f"\n{'#'*55}")
-        print(f"# TIER 2 — API scrapers: {[n for n,_ in TIER_2_PARALLEL]}")
-        print(f"{'#'*55}")
-        all_results.update(run_parallel(TIER_2_PARALLEL))
+        # ── Tier 2: API (parallel) + medium Selenium (sequential) ────────────
+        if t2_par or t2_seq:
+            print(f"\n{'#'*55}")
+            print(f"# TIER 2 — {[n for n,_ in t2_par+t2_seq]}")
+            print(f"{'#'*55}")
+            if t2_par:
+                all_results.update(run_parallel(t2_par))
+            if t2_seq:
+                all_results.update(run_sequential(t2_seq))
         tier2_jobs = count_new_jobs(user_id, run_start)
-        print(f'\n[tier2] Cumulative new jobs: {tier2_jobs}')
+        print(f'\n[tier2] Cumulative: {tier2_jobs}')
 
         if tier2_jobs >= MIN_TIER_YIELD:
-            print(f'[tier2] ✅ Threshold met ({tier2_jobs} ≥ {MIN_TIER_YIELD}) — skipping Tier 3')
+            print(f'[tier2] ✅ {tier2_jobs} ≥ {MIN_TIER_YIELD} — skipping Tier 3')
         else:
             # ── Tier 3: Last resort ──────────────────────────────────────────
-            print(f"\n{'#'*55}")
-            print(f"# TIER 3 — Last resort: {[n for n,_ in TIER_3_SEQUENTIAL]}")
-            print(f"{'#'*55}")
-            all_results.update(run_sequential(TIER_3_SEQUENTIAL))
+            if t3:
+                print(f"\n{'#'*55}")
+                print(f"# TIER 3 — {[n for n,_ in t3]}")
+                print(f"{'#'*55}")
+                all_results.update(run_sequential(t3))
             tier3_jobs = count_new_jobs(user_id, run_start)
-            print(f'\n[tier3] Cumulative new jobs: {tier3_jobs}')
+            print(f'\n[tier3] Cumulative: {tier3_jobs}')
 
     # ── Scorer + Enrichment per user ─────────────────────────────────────────
     print(f"\n{'#'*55}")
@@ -338,8 +406,10 @@ def main():
 
         # ── Process each user in sequence ────────────────────────────────────
         all_user_results = {}
-        for uid in users:
-            results = run_for_user(uid)
+        for user in users:
+            uid     = user['user_id']
+            profile = user['job_profile']
+            results = run_for_user(uid, profile)
             all_user_results[uid] = results
 
         # ── Shared post-processing (all users) ───────────────────────────────
