@@ -252,9 +252,10 @@ class UserProfile(BaseModel):
     experience_levels: Optional[List[str]] = []
     keywords: Optional[List[str]] = []
     negative_keywords: Optional[List[str]] = []
-    job_profile: Optional[str] = "generalist"
+    job_profile: Optional[str] = None
     """Defines which scrapers run for this user. Must be one of the values
-    returned by GET /api/v1/profiles. Unknown values fall back to 'generalist'."""
+    returned by GET /api/v1/profiles. Unknown values fall back to 'generalist'.
+    If omitted, the existing value in the DB is preserved (no overwrite)."""
     callback_url: Optional[str] = None   # Webhook URL to push job results
 
 
@@ -526,12 +527,31 @@ def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_ke
     # SSRF: ensure callback_url cannot pivot the dispatcher into internal infra.
     profile.callback_url = _validate_callback_url(profile.callback_url)
 
-    # Normalise job_profile — unknown value → 'generalist'
+    # Normalise job_profile:
+    # - None (field omitted)     → preserve existing DB value, or 'generalist' for new users
+    # - "" (empty string)        → 'generalist'
+    # - valid value (e.g. "tech") → use it
+    # - unknown value            → 'generalist' (with log warning)
     valid_profiles = _valid_job_profiles()
-    raw_profile = (profile.job_profile or 'generalist').lower().strip()
-    job_profile_norm = raw_profile if raw_profile in valid_profiles else 'generalist'
-    if job_profile_norm != raw_profile:
-        print(f"[sync] Unknown job_profile '{raw_profile}' → normalised to 'generalist'")
+
+    if profile.job_profile is None:
+        # Field was not sent — preserve whatever is already in the DB
+        try:
+            with contextlib.closing(_get_conn()) as _c:
+                _row = _c.execute(
+                    'SELECT job_profile FROM users_perfil WHERE user_id = ?', (profile.user_id,)
+                ).fetchone()
+                job_profile_norm = (_row['job_profile'] or 'generalist') if _row else 'generalist'
+        except Exception:
+            job_profile_norm = 'generalist'
+    else:
+        raw_profile = profile.job_profile.lower().strip()
+        if raw_profile in valid_profiles:
+            job_profile_norm = raw_profile
+        else:
+            job_profile_norm = 'generalist'
+            if raw_profile:
+                print(f"[sync] Unknown job_profile '{raw_profile}' → normalised to 'generalist'")
 
     # Convert lists to comma-separated strings for SQLite
     job_titles_str        = ", ".join(profile.job_titles)          if profile.job_titles          else ""
