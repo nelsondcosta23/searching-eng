@@ -304,18 +304,24 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    header { visibility: hidden; }
-    .stAppDeployButton { display: none !important; }
-    #MainMenu { visibility: hidden; }
-    footer { visibility: hidden; }
-    .block-container { padding-top: 1.5rem !important; padding-bottom: 0 !important; }
-    .main { background-color: #FFFFFF; }
-    div[data-testid="metric-container"] {
-        background: #F9FAFB; border-radius: 12px; padding: 10px 15px;
-        border: 1px solid #E5E7EB; box-shadow: 0 1px 2px rgba(0,0,0,.05);
+    /* Hide Streamlit branding without touching the sidebar collapse/expand button */
+    [data-testid="stToolbar"]    { visibility: hidden; }
+    [data-testid="stDecoration"] { display: none; }
+    [data-testid="stStatusWidget"] { visibility: hidden; }
+    .stAppDeployButton           { display: none !important; }
+    #MainMenu                    { visibility: hidden; }
+    footer                       { visibility: hidden; }
+
+    /* Always show the sidebar expand arrow (visible when sidebar is collapsed) */
+    [data-testid="stSidebarCollapsedControl"] {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
     }
-    div[data-testid="stMetricValue"] { font-size: 24px !important; font-weight: 700; color: #111827; }
-    div[data-testid="stMetricLabel"] { font-size: 14px !important; color: #6B7280; }
+
+    .block-container { padding-top: 1rem !important; padding-bottom: 0 !important; }
+    .main { background-color: #FFFFFF; }
     .stDataFrame { border: 1px solid #E5E7EB; border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
