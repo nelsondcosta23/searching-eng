@@ -380,7 +380,8 @@ else:
         if is_job_running():
             st.warning("⚙️ **Jobs Running!** O sistema está a processar novas vagas em background.")
 
-        # ── Title + metrics placeholder (filled after filtering) ──────────────
+        # Placeholder rendered before filters; filled with compact header after
+        # filtering so the metric counts reflect the active filter state.
         top_container = st.container()
 
         # ── Filter bar — Row 1 ───────────────────────────────────────────────
@@ -436,16 +437,37 @@ else:
         today_prefix = datetime.now().strftime('%Y-%m-%d')
         n_hoje = int(df_f['data_scraped'].str.startswith(today_prefix, na=False).sum())
 
+        n_ativas  = int((df_f['status'] == 'Ativa').sum())
+        n_empresas = int(df_f['empresa'].nunique())
+        n_total    = len(df_f)
         with top_container:
-            t1, m1, m2, m3, m4 = st.columns([2, 1, 1, 1, 1])
-            with t1:
-                st.title("🔍 Pesquisa de Emprego")
-                st.caption("Agregador de vagas em tempo real. Seleciona uma vaga para ver detalhes.")
-            m1.metric("Total de Vagas",  len(df_f))
-            m2.metric("Vagas Ativas",    int((df_f['status'] == 'Ativa').sum()))
-            m3.metric("Empresas",        int(df_f['empresa'].nunique()))
-            m4.metric("Hoje",            n_hoje, help="Novas vagas encontradas hoje")
-            st.divider()
+            st.markdown(f"""
+<div style="display:flex;align-items:center;gap:2.5rem;padding:0.4rem 0 0.6rem;
+            border-bottom:1px solid #E5E7EB;margin-bottom:0.3rem;flex-wrap:wrap;">
+  <div style="display:flex;align-items:center;gap:0.4rem;flex-shrink:0;">
+    <span style="font-size:1.3rem;">🔍</span>
+    <span style="font-size:1.05rem;font-weight:700;color:#111827;white-space:nowrap;">Pesquisa de Emprego</span>
+  </div>
+  <div style="display:flex;gap:2rem;align-items:center;flex-wrap:wrap;">
+    <div style="text-align:center;">
+      <div style="font-size:0.65rem;color:#9CA3AF;text-transform:uppercase;letter-spacing:.05em;line-height:1;">Total</div>
+      <div style="font-size:1.25rem;font-weight:700;color:#111827;line-height:1.3;">{n_total}</div>
+    </div>
+    <div style="text-align:center;">
+      <div style="font-size:0.65rem;color:#9CA3AF;text-transform:uppercase;letter-spacing:.05em;line-height:1;">Ativas</div>
+      <div style="font-size:1.25rem;font-weight:700;color:#10b981;line-height:1.3;">{n_ativas}</div>
+    </div>
+    <div style="text-align:center;">
+      <div style="font-size:0.65rem;color:#9CA3AF;text-transform:uppercase;letter-spacing:.05em;line-height:1;">Empresas</div>
+      <div style="font-size:1.25rem;font-weight:700;color:#111827;line-height:1.3;">{n_empresas}</div>
+    </div>
+    <div style="text-align:center;">
+      <div style="font-size:0.65rem;color:#9CA3AF;text-transform:uppercase;letter-spacing:.05em;line-height:1;">Hoje</div>
+      <div style="font-size:1.25rem;font-weight:700;color:#6366f1;line-height:1.3;">{n_hoje}</div>
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
         # ── Build display dataframe ───────────────────────────────────────────
         df_disp = df_f.copy()
