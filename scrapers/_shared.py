@@ -59,16 +59,22 @@ DEFAULT_HEADERS = {
 # Seniority extraction (from title, falling back to first 500 chars of desc)
 # ─────────────────────────────────────────────────────────────────────────────
 _SENIORITY_MAP = [
-    # Most specific / senior first so they short-circuit before generic ones
-    (re.compile(r'\b(cto|ceo|coo|cpo|ciso|chief\s+\w+\s+officer)\b', re.I),  'C-Level'),
-    (re.compile(r'\b(vp|vice.?president)\b', re.I),                           'VP'),
-    (re.compile(r'\b(director|head\s+of)\b', re.I),                           'Director'),
-    (re.compile(r'\b(staff\s+engineer|principal\s+engineer|principal)\b', re.I), 'Staff / Principal'),
-    (re.compile(r'\b(engineering\s+manager|tech(?:nical)?\s+manager)\b', re.I), 'Manager'),
-    (re.compile(r'\b(tech(?:nical)?\s+lead|team\s+lead|lead\s+\w+)\b', re.I), 'Lead'),
-    (re.compile(r'\b(senior|sénior|sr\.?)\b', re.I),                          'Sénior'),
-    (re.compile(r'\b(mid.?level|pleno|middle)\b', re.I),                      'Mid-Level'),
-    (re.compile(r'\b(junior|júnior|jr\.?|entry.?level|associate)\b', re.I),   'Júnior'),
+    # Most specific / senior first so they short-circuit before generic ones.
+    # Patterns cover both English and Portuguese job title conventions.
+    (re.compile(r'\b(cto|ceo|coo|cpo|ciso|chief\s+\w+\s+officer)\b', re.I),                          'C-Level'),
+    (re.compile(r'\b(vp|vice.?president|vice.?presidente)\b', re.I),                                   'VP'),
+    (re.compile(r'\b(director|diretor[a]?|diretora|head\s+of|responsável)\b', re.I),                   'Director'),
+    (re.compile(r'\b(staff\s+engineer|principal\s+engineer|principal)\b', re.I),                       'Staff / Principal'),
+    # Manager: EN + PT (gestor, gestora, coordenador, coordenadora, chefe de)
+    (re.compile(r'\b(engineering\s+manager|tech(?:nical)?\s+manager|gestor[a]?|coordenador[a]?|chefe\s+de)\b', re.I), 'Manager'),
+    # Lead: EN + PT (líder, responsável técnico)
+    (re.compile(r'\b(tech(?:nical)?\s+lead|team\s+lead|lead\s+\w+|l[íi]der|responsável\s+t[eé]cnico)\b', re.I), 'Lead'),
+    # Senior: EN + PT variants (sénior, snr)
+    (re.compile(r'\b(senior|s[eé]nior|sr\.?|snr\.?)\b', re.I),                                        'Sénior'),
+    # Mid-level: EN + PT (pleno, intermédio)
+    (re.compile(r'\b(mid.?level|pleno|middle|interm[eé]dio)\b', re.I),                                 'Mid-Level'),
+    # Junior: EN + PT (júnior, estagiário, trainee, estágio)
+    (re.compile(r'\b(junior|j[uú]nior|jr\.?|entry.?level|associate|estagi[áa]rio|trainee|est[áa]gio)\b', re.I), 'Júnior'),
 ]
 
 

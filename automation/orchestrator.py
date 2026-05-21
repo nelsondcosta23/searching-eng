@@ -40,13 +40,15 @@ DB_PATH      = os.path.join(BASE_DIR, 'database', 'vagas.db')
 # field (read from users_perfil) mapped via SCRAPERS_<PROFILE> env vars.
 # ─────────────────────────────────────────────────────────────────────────────
 SCRAPER_REGISTRY: dict[str, dict] = {
-    'sapo_scraper.py':      {'name': 'Sapo Jobs',    'tier': 1, 'mode': 'sequential'},
-    'linkedin_scraper.py':  {'name': 'LinkedIn PT',  'tier': 1, 'mode': 'sequential'},
-    'companies_scraper.py': {'name': 'Companies',    'tier': 2, 'mode': 'parallel'},
-    'itjobs_scraper.py':    {'name': 'ITJobs',       'tier': 2, 'mode': 'parallel'},
-    'indeed_scraper.py':    {'name': 'Indeed PT',    'tier': 2, 'mode': 'sequential'},
-    'landing_scraper.py':   {'name': 'Landing.jobs', 'tier': 3, 'mode': 'parallel'},
-    'expresso_scraper.py':  {'name': 'Expresso Jobs','tier': 3, 'mode': 'sequential'},
+    # timeout: max seconds before the subprocess is killed.
+    # Selenium scrapers need more headroom; API scrapers should finish in minutes.
+    'sapo_scraper.py':      {'name': 'Sapo Jobs',    'tier': 1, 'mode': 'sequential', 'timeout': 1800},
+    'linkedin_scraper.py':  {'name': 'LinkedIn PT',  'tier': 1, 'mode': 'sequential', 'timeout': 1800},
+    'companies_scraper.py': {'name': 'Companies',    'tier': 2, 'mode': 'parallel',   'timeout': 600},
+    'itjobs_scraper.py':    {'name': 'ITJobs',       'tier': 2, 'mode': 'parallel',   'timeout': 600},
+    'indeed_scraper.py':    {'name': 'Indeed PT',    'tier': 2, 'mode': 'sequential', 'timeout': 1800},
+    'landing_scraper.py':   {'name': 'Landing.jobs', 'tier': 3, 'mode': 'parallel',   'timeout': 300},
+    'expresso_scraper.py':  {'name': 'Expresso Jobs','tier': 3, 'mode': 'sequential', 'timeout': 1800},
 }
 
 # Minimum new jobs per tier before skipping lower tiers
@@ -191,11 +193,12 @@ def count_new_jobs(user_id: str, since: datetime) -> int:
 
 def run_scraper(name: str, filename: str) -> tuple[str, bool, int]:
     """Runs a single scraper subprocess. Returns (name, success, duration_s)."""
-    path = os.path.join(SCRAPERS_DIR, filename)
+    path    = os.path.join(SCRAPERS_DIR, filename)
+    timeout = SCRAPER_REGISTRY.get(filename, {}).get('timeout', 1800)
     t_start = datetime.now()
 
     print(f"\n{'='*55}")
-    print(f"[{t_start.strftime('%H:%M:%S')}] ▶  {name}")
+    print(f"[{t_start.strftime('%H:%M:%S')}] ▶  {name}  (timeout {timeout}s)")
     print(f"{'='*55}")
 
     env = {**os.environ, 'PYTHONUNBUFFERED': '1'}
@@ -206,7 +209,7 @@ def run_scraper(name: str, filename: str) -> tuple[str, bool, int]:
         result = subprocess.run(
             [sys.executable, path],
             capture_output=True, text=True,
-            cwd=BASE_DIR, timeout=7200, env=env,
+            cwd=BASE_DIR, timeout=timeout, env=env,
         )
         if result.stdout:
             print(result.stdout)

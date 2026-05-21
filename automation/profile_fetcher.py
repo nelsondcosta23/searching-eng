@@ -26,7 +26,7 @@ _CITY_TO_COUNTRY = {
 # Global cache — 1 HTTP call per orchestration run
 _PROFILE_CACHE = None
 CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tmp', 'profile_cache.json')
-CACHE_TTL = 3600  # 1 hour
+CACHE_TTL = 300  # 5 min — profile changes propagate quickly after /users/sync
 
 
 def get_raw_profile():
