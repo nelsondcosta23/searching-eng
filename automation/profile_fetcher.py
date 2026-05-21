@@ -198,8 +198,10 @@ def _build_local_queries(local: dict) -> list[dict]:
     # Only combine the top 2 shortest job_titles (avoid "Chief Technology Officer AI"
     # which is too long to match anything), with the top 3 most useful keywords.
     short_titles = sorted(titles, key=len)[:2]   # CTO, Tech Lead
+    # Limit enriched combos to 1 keyword (was 3). 2 titles × 1 kw = 2 per location
+    # instead of 6 — reduces ~65% of enriched queries with minimal signal loss.
     useful_kw    = [kw for kw in keywords[:4]
-                    if len(kw) <= 20 and kw.lower() not in ('bitrix24',)][:3]  # skip brand names
+                    if len(kw) <= 20 and kw.lower() not in ('bitrix24',)][:1]  # skip brand names
 
     for title in short_titles:
         for kw in useful_kw:

@@ -78,7 +78,7 @@ def _normalize_job(raw: dict) -> dict:
     """Maps a raw landing.jobs API job to the project schema."""
     locs = raw.get('locations') or []
     city_parts = [f"{l.get('city', '')} ({l.get('country_code', '')})" for l in locs if isinstance(l, dict)]
-    if raw.get('remote'):
+    if raw.get('remote') and 'Remote' not in city_parts:
         city_parts.append('Remote')
     localizacao = ', '.join(city_parts) if city_parts else 'Remote'
 
@@ -185,12 +185,17 @@ def iniciar_scraper_landing():
             if negative_keyword_match(job['titulo'].lower(), NEGATIVE_KEYWORDS):
                 continue
 
-            # Relevance pre-filter: title + first 500 chars of desc must match at
-            # least one profile term. Prevents DevOps/Java jobs flooding the DB
-            # (avg score ~23 without this filter).
+            # Relevance pre-filter: accept if EITHER the job title directly matches
+            # a known role keyword OR the combined text has 2+ broad term matches.
+            # Single-term broad match was too loose ("senior" alone passed anything).
             if BROAD_TERMS:
-                combined_text = f"{job['titulo']} {job['descricao_completa'][:500]}"
-                if not strict_keyword_match(combined_text, BROAD_TERMS):
+                combined_text = f"{job['titulo']} {job['descricao_completa'][:500]}".lower()
+                title_match  = strict_keyword_match(job['titulo'].lower(), KEYWORDS)
+                broad_count  = sum(
+                    1 for t in BROAD_TERMS
+                    if re.search(r'\b' + re.escape(t.lower()) + r'\b', combined_text)
+                )
+                if not (title_match or broad_count >= 2):
                     continue
 
             if job_exists(job['link']):

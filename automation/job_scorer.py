@@ -112,10 +112,15 @@ def _parse_salary_value(text: str) -> int:
     k_match = re.search(r'(\d+)\s*[kK]', text)
     if k_match:
         return int(k_match.group(1)) * 1000
-    # Parse European/US notation: strip thousand separators (.,) then extract
-    # the first complete integer. Avoids the \d{1,3} regex truncation bug where
-    # "65000" (after stripping "65.000") was matched as "650" instead of "65000".
+    # Strip thousand separators so "40.000–60.000" becomes "40000–60000"
     cleaned = re.sub(r'[.,]', '', text)
+    # Detect salary range and return the midpoint. "EUR 40000–60000" → 50000
+    # instead of 40000 (the lower bound), which avoids false salary penalties.
+    range_match = re.search(r'(\d{4,})\s*[–\-]\s*(\d{4,})', cleaned)
+    if range_match:
+        low  = int(range_match.group(1))
+        high = int(range_match.group(2))
+        return (low + high) // 2
     m = re.search(r'\d{4,}', cleaned)  # require at least 4 digits (salary ≥ 1000)
     if m:
         try:
@@ -161,8 +166,9 @@ def _score_job(titulo: str, empresa: str, descricao: str, observacoes: str,
             if term in desc_tokens:
                 raw_score += weight * 1
 
-    # Normalize to 0–100 base
-    normalized = min(100, int((raw_score / 150.0) * 100))
+    # Normalize to 0–100 base. Divisor 300 spreads scores across the full scale;
+    # 150 compressed ~80% of relevant jobs into the 90-100 band indistinguishably.
+    normalized = min(100, int((raw_score / 300.0) * 100))
 
     # --- Salary modifier ---
     if min_salary > 0:

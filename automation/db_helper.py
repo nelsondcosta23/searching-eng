@@ -18,6 +18,7 @@ def _get_connection():
     """Returns a new SQLite connection with WAL mode enabled and a 20s timeout."""
     conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.execute('PRAGMA journal_mode=WAL;')
+    conn.execute('PRAGMA wal_autocheckpoint=1000;')
     return conn
 
 

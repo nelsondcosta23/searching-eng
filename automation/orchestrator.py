@@ -377,7 +377,10 @@ def main():
         try:
             with open(GLOBAL_LOCK) as f:
                 pid = f.read().strip()
-            if pid and os.path.exists(f'/proc/{pid}'):
+            # psutil.pid_exists works cross-platform (Linux + Windows).
+            # os.path.exists('/proc/<pid>') only works on Linux.
+            import psutil
+            if pid and psutil.pid_exists(int(pid)):
                 print(f'[lock] Orchestrator already running (PID {pid}). Exiting.')
                 sys.exit(0)
             else:

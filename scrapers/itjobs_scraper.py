@@ -13,6 +13,7 @@ import re
 import sys
 import time
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 PLATAFORMA = "ITJobs"
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
@@ -231,35 +232,48 @@ def iniciar_scraper_itjobs():
                     print("  → No jobs for this query.")
                 break
 
+            # --- Pass 1: filter ---
+            to_save = []
             for raw in results:
                 job = _normalize_job(raw, fallback_query=q)
                 if not job['titulo'] or not job['link']:
                     continue
-
                 texto_busca = job['titulo'].lower()
-
                 if not strict_keyword_match(texto_busca, KEYWORDS):
                     continue
                 blocked_kw = negative_keyword_match(texto_busca, NEGATIVE_KEYWORDS)
                 if blocked_kw:
                     print(f"  [BLOCKED] '{job['titulo']}' contains a negative keyword ({blocked_kw}).")
                     continue
-
                 if job_exists(job['link']):
                     continue
+                to_save.append(job)
 
-                # Fetch city names from detail endpoint (only for new jobs)
-                city_names = _fetch_location(int(job['id_externo'])) if job['id_externo'] else ''
-                if city_names:
-                    work_suffix = ''
-                    if '(Remoto)' in job['localizacao']:
-                        work_suffix = ' (Remoto)'
-                    elif '(Híbrido)' in job['localizacao']:
-                        work_suffix = ' (Híbrido)'
-                    job['localizacao'] = city_names + work_suffix
+            # --- Pass 2: batch location fetch (≤5 parallel calls) ---
+            jobs_with_id = [j for j in to_save if j['id_externo']]
+            if jobs_with_id:
+                with ThreadPoolExecutor(max_workers=5) as ex:
+                    futures = {
+                        ex.submit(_fetch_location, int(j['id_externo'])): j
+                        for j in jobs_with_id
+                    }
+                    for future in as_completed(futures):
+                        job = futures[future]
+                        try:
+                            city = future.result(timeout=8)
+                        except Exception:
+                            city = ''
+                        if city:
+                            work_suffix = ''
+                            if '(Remoto)' in job['localizacao']:
+                                work_suffix = ' (Remoto)'
+                            elif '(Híbrido)' in job['localizacao']:
+                                work_suffix = ' (Híbrido)'
+                            job['localizacao'] = city + work_suffix
 
+            # --- Pass 3: save ---
+            for job in to_save:
                 print(f"  [NEW JOB] {job['titulo']} @ {job['empresa']} | {job['localizacao']}")
-
                 salvo = save_job(
                     user_id=USER_ID,
                     plataforma=PLATAFORMA,
@@ -279,7 +293,6 @@ def iniciar_scraper_itjobs():
                 if salvo:
                     vagas_inseridas += 1
                     print("    ✅ Saved.")
-
                 if MAX_JOBS > 0 and vagas_inseridas >= MAX_JOBS:
                     break
 

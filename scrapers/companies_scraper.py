@@ -302,6 +302,11 @@ def _strategy_html(company: dict) -> list[dict]:
 
     anchors = soup.select(selector)
     if not anchors:
+        all_links = soup.select('a[href]')
+        if len(all_links) > 5:
+            print(f"    ⚠ Selector '{selector[:40]}' matched 0 — page has {len(all_links)} links (broken selector?)")
+        else:
+            print(f"    ℹ No links on page — likely SPA/JS-rendered (expected)")
         return []
 
     out = []

@@ -1,3 +1,4 @@
+import re
 import sqlite3
 import sys
 import requests
@@ -7,6 +8,13 @@ import os
 from datetime import datetime
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+# Patterns to detect expired/unavailable job pages. Defined at module level so
+# the regex is compiled once, not once per job verification loop.
+_EXPIRY_RE = re.compile(
+    r'(expirad|indispon[ií]vel|desativad|removid|no longer available|não encontrad|página não existe|não está activa)',
+    re.I,
+)
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from automation.db_helper import execute_with_retry, transaction
@@ -50,11 +58,11 @@ def verify_active_jobs():
         if VERIFIER_SKIP_RECENT_DAYS > 0:
             cutoff_clause = "AND (data_ultima_verificacao IS NULL OR data_ultima_verificacao < datetime('now', ?))"
             _cur = _conn.execute(
-                f"SELECT id, link, plataforma, titulo FROM vagas WHERE status = 'Ativa' {cutoff_clause}",
+                f"SELECT id, link, plataforma, titulo FROM vagas WHERE status IN ('Ativa', 'Inacessível') {cutoff_clause}",
                 (f'-{VERIFIER_SKIP_RECENT_DAYS} days',),
             )
         else:
-            _cur = _conn.execute("SELECT id, link, plataforma, titulo FROM vagas WHERE status = 'Ativa'")
+            _cur = _conn.execute("SELECT id, link, plataforma, titulo FROM vagas WHERE status IN ('Ativa', 'Inacessível')")
         jobs = _cur.fetchall()
     # _conn is closed here — every UPDATE below uses execute_with_retry().
 
@@ -67,6 +75,13 @@ def verify_active_jobs():
     def _mark_verified(job_id, ts):
         execute_with_retry(
             "UPDATE vagas SET data_ultima_verificacao = ? WHERE id = ?",
+            (ts, job_id),
+        )
+
+    def _mark_inacessivel(job_id, ts):
+        # Network failure / timeout — not confirmed expired, retry on next run.
+        execute_with_retry(
+            "UPDATE vagas SET status = 'Inacessível', data_ultima_verificacao = ? WHERE id = ?",
             (ts, job_id),
         )
 
@@ -109,9 +124,9 @@ def verify_active_jobs():
             if status_code == 404:
                 job_expired = True
             elif status_code == 200:
-                if 'Sapo' in platform and 'Esta oferta já não se encontra disponível' in response.text:
+                if 'Sapo' in platform and _EXPIRY_RE.search(response.text):
                     job_expired = True
-                elif 'Net-Empregos' in platform and ('página não existe' in response.text or 'Esta oferta já não está activa' in response.text):
+                elif 'Net-Empregos' in platform and _EXPIRY_RE.search(response.text):
                     job_expired = True
             
             if job_expired:
@@ -121,6 +136,11 @@ def verify_active_jobs():
             else:
                 _mark_verified(job_id, now_date)
             verified_count += 1
+        except requests.RequestException as e:
+            now_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            print(f"  [INACESSÍVEL] {title[:40]}... — network error: {e}")
+            _mark_inacessivel(job_id, now_date)
+            continue
         except Exception as e:
             print(f"Error processing {job_id}: {e}")
             continue
@@ -188,7 +208,9 @@ def verify_active_jobs():
                         _mark_verified(job_id, now_date)
                     verified_count += 1
                 except Exception as e:
-                    print(f"Error processing {job_id}: {e}")
+                    now_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    print(f"  [INACESSÍVEL] {title[:40]}... ({platform}) — {e}")
+                    _mark_inacessivel(job_id, now_date)
                     continue
         finally:
             if driver:

@@ -116,7 +116,7 @@ def extract_salary_from_text(text: str) -> str:
 def make_session(
     *,
     retries: int = 3,
-    backoff: float = 0.5,
+    backoff: float = 1.5,
     status_forcelist=(500, 502, 503, 504, 429),
     headers: Optional[dict] = None,
 ) -> requests.Session:
@@ -126,12 +126,16 @@ def make_session(
     handles both http and https, and ships with PT/EN Accept-Language plus
     a desktop Chrome User-Agent. Override `headers` to replace the defaults
     or pass `User-Agent` to override just the UA.
+
+    backoff_factor=1.5 → waits 1.5s, 3s, 6s between retries (aggressive enough
+    to clear rate limits without hanging the scraper for minutes).
     """
     sess = requests.Session()
     retry = Retry(
         total=retries,
         backoff_factor=backoff,
         status_forcelist=list(status_forcelist),
+        allowed_methods=['GET', 'POST', 'HEAD'],
     )
     adapter = HTTPAdapter(max_retries=retry)
     sess.mount("https://", adapter)
