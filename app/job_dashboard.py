@@ -320,7 +320,7 @@ st.markdown("""
         pointer-events: auto !important;
     }
 
-    .block-container { padding-top: 1rem !important; padding-bottom: 0 !important; }
+    .block-container { padding-top: 2.5rem !important; padding-bottom: 0 !important; }
     .main { background-color: #FFFFFF; }
     .stDataFrame { border: 1px solid #E5E7EB; border-radius: 8px; }
 </style>
@@ -390,8 +390,8 @@ else:
         # filtering so the metric counts reflect the active filter state.
         top_container = st.container()
 
-        # ── Filter bar — Row 1 ───────────────────────────────────────────────
-        fc1, fc2, fc3, fc4 = st.columns([3, 1, 1, 1])
+        # ── Filter bar — única linha: search · plataforma · status · score · hoje
+        fc1, fc2, fc3, fc4, fc5 = st.columns([3, 1, 1, 1, 1])
         search    = fc1.text_input("Procurar (Título, Empresa, Local...)", placeholder="Ex: Python, Lisboa...")
 
         _raw_platforms = sorted(df['plataforma'].unique().tolist())
@@ -404,15 +404,10 @@ else:
         if st.session_state.main_platform not in plataformas_disponiveis:
             st.session_state.main_platform = "Todas"
 
-        platform  = fc2.selectbox("Plataforma", plataformas_disponiveis, key="main_platform")
-        status    = fc3.selectbox("Status", ["Todos", "Ativa", "Expirada", "Inacessível"], index=1)
-        hoje_only = fc4.checkbox("Só hoje", value=False)
-
-        # ── Filter bar — Row 2 ───────────────────────────────────────────────
-        min_score_val = st.slider(
-            "Score mínimo", min_value=0, max_value=100, value=0, step=5,
-            help="0 = mostra tudo. Aumenta para filtrar vagas pouco relevantes.",
-        )
+        platform      = fc2.selectbox("Plataforma", plataformas_disponiveis, key="main_platform")
+        status        = fc3.selectbox("Status", ["Todos", "Ativa", "Expirada", "Inacessível"], index=1)
+        min_score_val = fc4.slider("Score ≥", min_value=0, max_value=100, value=0, step=5)
+        hoje_only     = fc5.checkbox("Só hoje", value=False)
 
         # ── Apply filters ─────────────────────────────────────────────────────
         df_f = df.copy()
