@@ -25,13 +25,9 @@ try:
     USER_ID = get_user_id()
     # Broader set: job titles + keywords (cloud, AI, automation…) for description-level filter
     BROAD_TERMS = [r.lower() for r in get_target_roles()]
-except ImportError:
-    print("Warning: Could not load profile_fetcher. Using default keywords.")
-    KEYWORDS = ["developer"]
-    NEGATIVE_KEYWORDS = []
-    USER_ID = "Unknown"
-    BROAD_TERMS = ["developer"]
-    strict_keyword_match = lambda text, kws: any(k in text.lower() for k in kws)
+except ImportError as _e:
+    print(f"FATAL: profile_fetcher import failed: {_e}. Aborting landing_scraper.", file=__import__('sys').stderr)
+    __import__('sys').exit(1)
 
 from automation.db_helper import save_job, job_exists
 from scrapers._shared import negative_keyword_match, make_session, extract_seniority

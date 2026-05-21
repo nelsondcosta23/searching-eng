@@ -24,16 +24,11 @@ try:
     USER_ID = get_user_id()
     KEYWORDS = get_job_titles()
     NEGATIVE_KEYWORDS = get_negative_keywords()
-except ImportError:
-    print("Warning: Could not load profile_fetcher. Using default search.")
-    PESQUISAS = {
-        'Default - Python - Porto': "https://emprego.sapo.pt/offers?local=porto&pesquisa=python"
-    }
-    USER_ID = "Unknown"
-    KEYWORDS = []
-    NEGATIVE_KEYWORDS = []
+except ImportError as _e:
+    print(f"FATAL: profile_fetcher import failed: {_e}. Aborting sapo_scraper.", file=__import__('sys').stderr)
+    __import__('sys').exit(1)
 
-from scrapers._shared import make_session, DEFAULT_HEADERS, negative_keyword_match
+from scrapers._shared import make_session, DEFAULT_HEADERS, negative_keyword_match, init_chrome_with_timeout
 
 PLATAFORMA = "Sapo Jobs"
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
@@ -94,9 +89,8 @@ def configurar_driver():
     options.add_argument("--lang=pt-PT,pt;q=0.9,en;q=0.8")
     options.add_argument(f"--user-data-dir={tmp_profile_dir}")
 
-    # Auto-detect version so uc downloads the MATCHING ChromeDriver
     chrome_version = get_chrome_major_version()
-    driver = uc.Chrome(options=options, headless=True, version_main=chrome_version)
+    driver = init_chrome_with_timeout(options, headless=True, version_main=chrome_version)
     driver._tmp_profile_dir = tmp_profile_dir
     return driver
 

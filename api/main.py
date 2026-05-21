@@ -25,24 +25,29 @@ def _day_range(date_str: str) -> Tuple[str, str]:
     return (d.strftime('%Y-%m-%d %H:%M:%S'), (d + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S'))
 
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
-API_KEY  = os.environ.get('API_KEY', 'changeme-please')
+API_KEY  = os.environ.get('API_KEY', '').strip()
 
-# Optional per-user authorization scope. If set, /users/sync only allows
-# modifying this exact user_id. Without it, any holder of API_KEY can write
-# any user's profile (legacy behavior).
+# Optional per-user authorization scope.
+# When set: /users/sync, GET /jobs, GET /stats, GET /jobs/{id} all reject any
+# request targeting a different user_id. Without it, any API_KEY holder can
+# read/write any user's data (single-tenant default).
 OWNER_USER_ID = os.environ.get('OWNER_USER_ID', '').strip()
 
 # Allow http (non-https) callback URLs only when explicitly enabled.
 ALLOW_HTTP_CALLBACKS = os.environ.get('ALLOW_HTTP_CALLBACKS', '0') == '1'
 CALLBACK_URL_MAX_LEN = 2048
 
+_INSECURE_DEFAULTS = {'changeme-please', 'change-me', 'secret', 'api_key', ''}
+
 def _startup_checks():
-    if API_KEY == 'changeme-please':
+    if API_KEY in _INSECURE_DEFAULTS:
+        import sys
         print(
-            "[API] WARNING: API_KEY is set to the insecure default 'changeme-please'. "
-            "Set a strong API_KEY in .env before deploying.",
+            "[API] FATAL: API_KEY is not set or uses an insecure default value. "
+            "Set a strong random API_KEY in .env and restart.",
             flush=True,
         )
+        sys.exit(1)
 
 
 app = FastAPI(
@@ -129,6 +134,19 @@ def _validate_callback_url(url: Optional[str]) -> Optional[str]:
 # Auth
 # ─────────────────────────────────────────────────────────────────────────────
 security = HTTPBearer(auto_error=False)
+
+
+def _enforce_owner(user_id: str):
+    """Raises 403 when OWNER_USER_ID is set and the requested user_id doesn't match.
+
+    This prevents any API_KEY holder from reading another user's data in
+    single-tenant deployments. No-op when OWNER_USER_ID is not configured.
+    """
+    if OWNER_USER_ID and user_id != OWNER_USER_ID:
+        raise HTTPException(
+            status_code=403,
+            detail=f"This API instance only serves user_id={OWNER_USER_ID}.",
+        )
 
 
 def _safe_compare(provided: str, expected: str) -> bool:
@@ -386,6 +404,8 @@ def get_jobs(
     **v2.1 fields**: `salario`, `tipo_contrato`, `nivel_experiencia`, `relevance_score` (0–100)
     **v2.1 filters**: `platform` (partial), `nivel`, `salario_only`, `sort_by_relevance`
     """
+    _enforce_owner(user_id)
+
     if run_date is None:
         effective_date: Optional[str] = datetime.now().strftime('%Y-%m-%d')
     elif run_date.lower() == 'all':
@@ -451,6 +471,10 @@ def get_single_job(
 
     if not row:
         raise HTTPException(status_code=404, detail=f"Job with id={job_id} not found.")
+
+    # Enforce owner check after fetch so we return 404 (not 403) when the job
+    # doesn't exist, regardless of ownership — avoids user_id enumeration.
+    _enforce_owner(dict(row).get('user_id', ''))
     return dict(row)
 
 
@@ -460,6 +484,7 @@ def get_stats(
     api_key: str = Depends(verify_api_key),
 ):
     """Returns aggregated statistics for a given user_id."""
+    _enforce_owner(user_id)
     if not _db_exists():
         raise HTTPException(status_code=503, detail="Database not found.")
 

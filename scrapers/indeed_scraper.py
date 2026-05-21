@@ -27,16 +27,13 @@ try:
     USER_ID = get_user_id()
     KEYWORDS = get_job_titles()
     NEGATIVE_KEYWORDS = get_negative_keywords()
-except ImportError:
-    print("Warning: Could not load profile_fetcher. Using default search.")
-    PESQUISAS = {
-        'IT - Python - Portugal': 'https://pt.indeed.com/jobs?q=python&l=Portugal'
-    }
-    USER_ID = "Unknown"
+except ImportError as _e:
+    print(f"FATAL: profile_fetcher import failed: {_e}. Aborting indeed_scraper.", file=__import__('sys').stderr)
+    __import__('sys').exit(1)
     KEYWORDS = []
     NEGATIVE_KEYWORDS = []
 
-from scrapers._shared import negative_keyword_match
+from scrapers._shared import negative_keyword_match, init_chrome_with_timeout
 
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))   # 0 = unlimited
 MAX_PAGES = int(os.environ.get('INDEED_MAX_PAGES', '3'))        # Pages per search (10 results/page)
@@ -102,7 +99,7 @@ def configurar_driver():
     options.add_argument(f"--user-data-dir={tmp_profile_dir}")
 
     chrome_version = get_chrome_major_version()
-    driver = uc.Chrome(options=options, headless=True, version_main=chrome_version)
+    driver = init_chrome_with_timeout(options, headless=True, version_main=chrome_version)
     driver._tmp_profile_dir = tmp_profile_dir
     return driver
 

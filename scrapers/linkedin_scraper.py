@@ -26,17 +26,11 @@ try:
     USER_ID = get_user_id()
     KEYWORDS = get_job_titles()
     NEGATIVE_KEYWORDS = get_negative_keywords()
-except ImportError:
-    print("Warning: Could not load profile_fetcher. Using default search.")
-    PESQUISAS = {
-        'IT - Python - Portugal': {'url': 'https://pt.linkedin.com/jobs/search?keywords=python&location=Portugal', 'is_priority': True}
-    }
-    USER_ID = "Unknown"
-    KEYWORDS = []
-    NEGATIVE_KEYWORDS = []
-    strict_keyword_match = lambda text, keywords: any(k in text.lower() for k in keywords)
+except ImportError as _e:
+    print(f"FATAL: profile_fetcher import failed: {_e}. Aborting linkedin_scraper.", file=__import__('sys').stderr)
+    __import__('sys').exit(1)
 
-from scrapers._shared import negative_keyword_match
+from scrapers._shared import negative_keyword_match, init_chrome_with_timeout
 
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))
 PRIORITY_PAGES   = int(os.environ.get('LINKEDIN_PRIORITY_PAGES', '4'))   # pages for priority queries
@@ -181,7 +175,7 @@ def _configurar_driver():
     options.add_argument(f"--user-data-dir={tmp_profile_dir}")
 
     chrome_version = _get_chrome_major_version()
-    driver = uc.Chrome(options=options, headless=True, version_main=chrome_version)
+    driver = init_chrome_with_timeout(options, headless=True, version_main=chrome_version)
     driver._tmp_profile_dir = tmp_profile_dir
     return driver
 

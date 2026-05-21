@@ -35,12 +35,9 @@ try:
     KEYWORDS = [t.lower() for t in (_profile.get('job_titles') or [])] or ["developer"]
     NEGATIVE_KEYWORDS = get_negative_keywords()
     USER_ID = get_user_id()
-except ImportError:
-    print("Warning: Could not load profile_fetcher. Using default keywords.")
-    KEYWORDS = ["developer"]
-    NEGATIVE_KEYWORDS = []
-    USER_ID = "Unknown"
-    strict_keyword_match = lambda text, keywords: any(k in text.lower() for k in keywords)
+except ImportError as _e:
+    print(f"FATAL: profile_fetcher import failed: {_e}. Aborting itjobs_scraper.", file=__import__('sys').stderr)
+    __import__('sys').exit(1)
 
 from automation.db_helper import save_job, job_exists
 from scrapers._shared import negative_keyword_match, make_session, extract_seniority

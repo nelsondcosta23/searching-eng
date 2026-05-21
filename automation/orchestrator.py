@@ -98,12 +98,54 @@ def build_tiers(scraper_files: list[str]) -> tuple[list, list, list, list]:
     return t1_seq, t2_par, t2_seq, t3
 
 # Global lock — prevents two orchestrator instances from running simultaneously.
-GLOBAL_LOCK = os.path.join(BASE_DIR, 'database', 'orchestrator.lock')
+GLOBAL_LOCK     = os.path.join(BASE_DIR, 'database', 'orchestrator.lock')
+# Per-user locks — prevents the same user being scraped twice concurrently
+# (e.g. clock skew causes a second cron fire while the first is still running).
+_USER_LOCKS_DIR = os.path.join(BASE_DIR, 'database', 'user_locks')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _acquire_user_lock(user_id: str) -> str | None:
+    """Try to acquire an exclusive lock for user_id.
+
+    Returns the lock file path on success, None when the user is already
+    being processed by another orchestrator instance. Uses psutil for
+    cross-platform PID liveness check (works on Windows + Linux).
+    """
+    import psutil
+    os.makedirs(_USER_LOCKS_DIR, exist_ok=True)
+    lock_path = os.path.join(_USER_LOCKS_DIR, f'{user_id[:8]}.lock')
+    if os.path.exists(lock_path):
+        try:
+            with open(lock_path) as f:
+                pid = f.read().strip()
+            if pid and psutil.pid_exists(int(pid)):
+                return None     # still running
+            os.remove(lock_path)  # stale
+        except Exception:
+            try:
+                os.remove(lock_path)
+            except Exception:
+                pass
+    try:
+        with open(lock_path, 'w') as f:
+            f.write(str(os.getpid()))
+        return lock_path
+    except Exception as e:
+        print(f'  [user-lock] Could not create lock for {user_id[:8]}: {e}')
+        return None   # proceed without lock rather than silently skip
+
+
+def _release_user_lock(lock_path: str | None):
+    if lock_path:
+        try:
+            os.remove(lock_path)
+        except Exception:
+            pass
+
 
 def get_active_users() -> list[dict]:
     """Returns all active users with their job_profile from users_perfil.
@@ -412,8 +454,17 @@ def main():
         for user in users:
             uid     = user['user_id']
             profile = user['job_profile']
-            results = run_for_user(uid, profile)
-            all_user_results[uid] = results
+
+            user_lock = _acquire_user_lock(uid)
+            if user_lock is None:
+                print(f'\n[orchestrator] User {uid[:8]} is already being processed by another instance. Skipping.')
+                continue
+
+            try:
+                results = run_for_user(uid, profile)
+                all_user_results[uid] = results
+            finally:
+                _release_user_lock(user_lock)
 
         # ── Shared post-processing (all users) ───────────────────────────────
         print(f"\n{'#'*55}")

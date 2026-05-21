@@ -30,15 +30,12 @@ try:
     KEYWORDS = [r.lower() for r in get_job_titles()]
     NEGATIVE_KEYWORDS = get_negative_keywords()
     USER_ID = get_user_id()
-except ImportError:
-    print("Warning: Could not load profile_fetcher. Using default keywords.")
-    KEYWORDS = ["cto", "tech lead"]
-    NEGATIVE_KEYWORDS = []
-    USER_ID = "Unknown"
-    strict_keyword_match = lambda text, kws: any(k in text.lower() for k in kws)
+except ImportError as _e:
+    print(f"FATAL: profile_fetcher import failed: {_e}. Aborting expresso_scraper.", file=__import__('sys').stderr)
+    __import__('sys').exit(1)
 
 from automation.db_helper import save_job, job_exists
-from scrapers._shared import negative_keyword_match, extract_seniority
+from scrapers._shared import negative_keyword_match, extract_seniority, init_chrome_with_timeout
 
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -81,7 +78,7 @@ def _configurar_driver() -> uc.Chrome:
     options.add_argument('--lang=pt-PT,pt;q=0.9')
     options.add_argument(f'--user-data-dir={tmp_dir}')
     # Non-headless: requires DISPLAY=:99 (set by docker-entrypoint.sh via Xvfb)
-    driver = uc.Chrome(options=options, headless=False, version_main=get_chrome_major_version())
+    driver = init_chrome_with_timeout(options, headless=False, version_main=get_chrome_major_version())
     driver.set_page_load_timeout(30)
     driver._tmp_profile_dir = tmp_dir
     return driver

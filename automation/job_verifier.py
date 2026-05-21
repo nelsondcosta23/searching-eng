@@ -67,21 +67,26 @@ def verify_active_jobs():
     # _conn is closed here — every UPDATE below uses execute_with_retry().
 
     def _mark_expired(job_id, ts):
+        # WHERE guard: don't overwrite if another process already changed status.
         execute_with_retry(
-            "UPDATE vagas SET status = 'Expirada', data_ultima_verificacao = ? WHERE id = ?",
+            "UPDATE vagas SET status = 'Expirada', data_ultima_verificacao = ? "
+            "WHERE id = ? AND status IN ('Ativa', 'Inacessível')",
             (ts, job_id),
         )
 
     def _mark_verified(job_id, ts):
+        # Only update timestamp — don't touch status (may already be 'Expirada').
         execute_with_retry(
-            "UPDATE vagas SET data_ultima_verificacao = ? WHERE id = ?",
+            "UPDATE vagas SET data_ultima_verificacao = ? "
+            "WHERE id = ? AND status IN ('Ativa', 'Inacessível')",
             (ts, job_id),
         )
 
     def _mark_inacessivel(job_id, ts):
-        # Network failure / timeout — not confirmed expired, retry on next run.
+        # Network failure — only mark if still active (don't revert 'Expirada').
         execute_with_retry(
-            "UPDATE vagas SET status = 'Inacessível', data_ultima_verificacao = ? WHERE id = ?",
+            "UPDATE vagas SET status = 'Inacessível', data_ultima_verificacao = ? "
+            "WHERE id = ? AND status = 'Ativa'",
             (ts, job_id),
         )
 
@@ -147,9 +152,21 @@ def verify_active_jobs():
 
     # 2. Process complex jobs with Selenium (Indeed/LinkedIn)
     if selenium_jobs:
+        import subprocess as _sub
+        import re as _re
         import undetected_chromedriver as uc
+        from scrapers._shared import init_chrome_with_timeout
+
+        def _detect_chrome_version() -> int | None:
+            try:
+                r = _sub.run(['google-chrome', '--version'], capture_output=True, text=True, timeout=5)
+                m = _re.search(r'(\d+)\.', r.stdout)
+                return int(m.group(1)) if m else None
+            except Exception:
+                return None
+
         print(f"\nInitializing Selenium for {len(selenium_jobs)} complex jobs...")
-        
+
         options = uc.ChromeOptions()
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-setuid-sandbox")
@@ -159,10 +176,11 @@ def verify_active_jobs():
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
         options.add_argument("--lang=pt-PT,pt;q=0.9,en;q=0.8")
-        
+
         driver = None
         try:
-            driver = uc.Chrome(options=options, headless=True, version_main=147)
+            chrome_ver = _detect_chrome_version()
+            driver = init_chrome_with_timeout(options, headless=True, version_main=chrome_ver)
             driver.set_page_load_timeout(VERIFIER_PAGE_TIMEOUT)
 
             # Warm-up Indeed

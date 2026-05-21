@@ -113,6 +113,45 @@ def extract_salary_from_text(text: str) -> str:
     return m.group(0).strip() if m else ''
 
 
+def init_chrome_with_timeout(options, *, headless: bool = True, version_main=None, timeout_s: int = 90):
+    """Initialize an undetected Chrome driver with a hard timeout.
+
+    Uses SIGALRM on Linux (Docker container) so the blocking uc.Chrome() call
+    is actually interrupted — not just abandoned. Calls sys.exit(1) on timeout
+    so the scraper subprocess exits cleanly instead of hanging for 2 hours.
+
+    Args:
+        options:      uc.ChromeOptions instance already configured.
+        headless:     Pass through to uc.Chrome(headless=...).
+        version_main: Chrome major version (None = auto-detect).
+        timeout_s:    Seconds before giving up (default 90).
+    """
+    import signal
+    import sys
+    import undetected_chromedriver as uc
+
+    def _on_timeout(signum, frame):
+        raise OSError(f"Chrome driver init timed out after {timeout_s}s")
+
+    kwargs: dict = {"options": options, "headless": headless}
+    if version_main is not None:
+        kwargs["version_main"] = version_main
+
+    if hasattr(signal, "SIGALRM"):  # Linux / macOS (not Windows)
+        old_handler = signal.signal(signal.SIGALRM, _on_timeout)
+        signal.alarm(timeout_s)
+    try:
+        driver = uc.Chrome(**kwargs)
+        return driver
+    except OSError as exc:
+        print(f"  ❌ {exc}. Aborting scraper.", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        if hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+
+
 def make_session(
     *,
     retries: int = 3,
