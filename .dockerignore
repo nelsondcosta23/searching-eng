@@ -16,6 +16,8 @@ database/*.db-journal
 database/*.db-wal
 database/*.db-shm
 database/backups/
+database/user_locks/
+database/orchestrator.lock
 
 # Logs e debug (montados via volume)
 logs/
@@ -32,13 +34,13 @@ scratch/
 
 # Documentação (não necessária dentro do container)
 README.md
-API_INTEGRATION_GUIDE.md
+INTEGRATION_GUIDE.md
 CLAUDE.md
+.claude/
 
-# Docker — o compose e o Dockerfile principal não precisam
-# de estar dentro da imagem. NOTA: Dockerfile.notifier NÃO
-# está aqui porque é necessário no build context do serviço
-# tunnel_notifier (dockerfile: Dockerfile.notifier).
+# Docker — o compose e o Dockerfile principal não são precisos dentro da imagem
+# Nota: Dockerfile.notifier NÃO está aqui — é necessário no build context do
+# serviço tunnel_notifier (dockerfile: Dockerfile.notifier em docker-compose.yml).
 Dockerfile
 docker-compose.yml
 .dockerignore
@@ -47,7 +49,6 @@ docker-compose.yml
 .vscode/
 .idea/
 .gemini/
-.claude/
 *.bat
 
 # Scripts temporários e de debug

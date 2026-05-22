@@ -15,6 +15,10 @@ database/
 *.db
 *.sqlite3
 
+# Runtime locks (criados pelo orchestrator, eliminados no fim de cada run)
+database/orchestrator.lock
+database/user_locks/
+
 # Logs e Ficheiros de Debug dos Scrapers
 logs/
 *.log

@@ -1,88 +1,148 @@
-# 💼 Searching Engine Platform
+# Searching Engine
 
-![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)
-![Docker](https://img.shields.io/badge/Docker-Supported-2496ED.svg)
-![FastAPI](https://img.shields.io/badge/FastAPI-009688.svg)
-![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B.svg)
-![SQLite](https://img.shields.io/badge/SQLite-003B57.svg)
+Automated job scraping platform for Portugal and remote-EMEA roles. Runs daily, multi-user, self-contained via Docker Compose.
 
-An advanced, fully-automated system designed to scrape, aggregate, verify, and serve job listings from various Portuguese and international job boards (LinkedIn, Indeed, Sapo, Expresso, Net-Empregos, ITJobs).
-
-The platform operates autonomously via a 00:00 Cronjob, stores data locally in a thread-safe SQLite database, provides a beautiful **Streamlit dashboard** for manual filtering, and exposes a **FastAPI REST Endpoint** protected by an API Key for external software integration.
+![Python](https://img.shields.io/badge/Python-3.9-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green) ![SQLite](https://img.shields.io/badge/SQLite-WAL-lightgrey) ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED)
 
 ---
 
-## ✨ Key Features
+## What it does
 
-- **🤖 Automated Scraper Engine**: Supports Static (Sapo, Expresso, Net-Empregos via RSS/HTML), API-based (ITJobs official JSON API) and Dynamic sites (LinkedIn, Indeed via Undetected ChromeDriver & Selenium).
-- **🧠 Dynamic Intelligence (Local + Sync)**: The system manages scraping strategies (roles, locations, keywords) via a local database, syncable with external software via API.
-- **🌐 REST API Service**: Exposes scraped jobs securely on port `8080`. External applications can query jobs and sync user profiles.
-- **🔔 Webhook Push**: Automatically pushes the top 5 most relevant jobs found today directly to your external software's callback URL.
-- **🛡️ Bullet-Proof SQLite**: Uses a centralized `db_helper.py` applying `WAL` mode and dynamic concurrency retries (Schema v6).
-- **🧹 Auto-Cleanup & Verification**: Periodically checks if jobs have expired (404 links) and purges old jobs (default 45 days).
-- **📈 Real-Time Dashboard**: Includes a sleek Streamlit web UI to monitor, filter, and apply to collected jobs easily.
+Every day at 00:00 the platform runs a full scrape across 7 sources, scores every job against each user's profile, verifies expired links, and pushes the day's top results to each user's webhook endpoint.
 
----
+**Sources:**
+- LinkedIn PT — Guest API for listings + Selenium for job detail pages
+- ITJobs — Official JSON API (no Selenium)
+- Companies — Direct ATS APIs: Greenhouse, Lever, Ashby (85+ companies, no Selenium)
+- Sapo Jobs — HTTP + Selenium for deep extraction
+- Expresso Jobs — Selenium with direct URL navigation
+- Indeed PT — Selenium (bot-detection aware, aborts early if blocked)
+- Landing.jobs — Public JSON API (no Selenium)
 
-## 🏗️ System Architecture
-
-The platform is strictly containerized using Docker Compose:
-
-1. **`job_api`**: FastAPI service running on port `8080` for result serving and profile syncing.
-2. **`streamlit_app`**: Python Streamlit dashboard running on port `8501`.
-3. **`python_scraper`**: The background worker running daily tasks (00:00 Scrape, 13:15 Email, etc.).
-4. **`cloudflare_tunnel`**: Automatically exposes the `job_api` to a public URL.
+**Per-user pipeline:**
+1. Tiered scraping: runs top-quality sources first, skips lower tiers if enough jobs found
+2. TF-IDF scorer (0–100): weights title×4, metadata×2, description×1 + salary/seniority modifiers
+3. Negative keyword and negative company filtering
+4. Webhook dispatch: POSTs top-5 jobs to `callback_url` with `X-Webhook-Secret`
 
 ---
 
-## 🚀 Quick Setup (Docker)
+## Architecture
 
-1. **Clone the repository**
-2. **Configure `.env`**:
-   ```bash
-   cp .env.example .env
-   # Edit .env with your RESEND_API_KEY, API_KEY, etc.
-   ```
-3. **Start the System**:
-   ```bash
-   docker-compose up -d --build
-   ```
-4. **Access**:
-   - 📊 **Dashboard:** [http://localhost:8501](http://localhost:8501)
-   - 🔌 **API Docs:** [http://localhost:8080/docs](http://localhost:8080/docs)
+5 Docker services:
 
----
+| Service | Port | Role |
+|---|---|---|
+| `python_scraper` | — | Daily worker (cron: scraping, scoring, verification, email) |
+| `job_api` | 8080 | FastAPI REST — profile sync + job queries for external apps |
+| `streamlit_app` | 8501 | Internal dashboard for monitoring and filtering |
+| `cloudflare_tunnel` | — | Exposes `job_api` on a public `*.trycloudflare.com` URL |
+| `tunnel_notifier` | — | Watches tunnel URL changes and notifies external software |
 
-## 📡 REST API & Webhooks
+Cron schedule (UTC):
 
-### Fetch Jobs
-`GET /api/v1/jobs?user_id=...&api_key=...`
-
-### Sync Profile
-`POST /api/v1/users/sync`
-Allows external software to update search preferences and register a `callback_url` for webhooks.
-
-### Webhook Push
-If a `callback_url` is provided, the system sends a `POST` request every night with today's best jobs.
-Includes security header: `X-Webhook-Secret`.
-
-*Detailed documentation in: [API_INTEGRATION_GUIDE.md](API_INTEGRATION_GUIDE.md)*
+| Time | Task |
+|---|---|
+| 00:00 | Full scrape + score + webhook |
+| 13:15 | Daily email summary (Resend) |
+| 21:00 | Expired link verification |
+| Sun 03:00 | DB cleanup (jobs older than `DIAS_RETENCAO` days, default 45) |
 
 ---
 
-## 📁 Directory Structure
+## Quick start
 
-```text
-searching-eng/
-├── api/                  # FastAPI Service (main.py)
-├── app/                  # Streamlit Dashboard (job_dashboard.py)
-├── automation/           # Core Logic (orchestrator, scorer, dispatcher...)
-├── scrapers/             # Extraction engines (LinkedIn, Sapo, etc.)
-├── config/               # Crontab definitions
-├── database/             # Persistent SQLite storage
-└── logs/                 # Screenshots & Error logs
+```bash
+cp .env.example .env
+# Fill in: API_KEY, RESEND_API_KEY, ITJOBS_API_KEY, EXTERNAL_WEBHOOK_SECRET
+
+docker-compose up -d --build
+```
+
+- Dashboard: http://localhost:8501
+- API docs: http://localhost:8080/docs
+
+**Manual scrape (Windows):**
+```bat
+Procurar_Vagas_Agora.bat
+```
+
+**Manual scrape (any OS):**
+```bash
+docker exec python_scraper python /app/automation/orchestrator.py
+```
+
+**Force rescore after profile update:**
+```bash
+docker exec python_scraper python /app/automation/job_scorer.py --rescore-all
 ```
 
 ---
 
-*Automatic Job Scraping System | Built for efficiency, scale, and clean database architectures.*
+## Key environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `API_KEY` | Yes | Bearer token for REST API auth |
+| `RESEND_API_KEY` | Yes | Resend.com API key for daily email |
+| `ITJOBS_API_KEY` | Yes | ITJobs public API key |
+| `EXTERNAL_WEBHOOK_SECRET` | Yes | Header secret sent in webhook `X-Webhook-Secret` |
+| `OWNER_USER_ID` | Recommended | Restricts public GET endpoints to this user's data |
+| `MAX_JOBS_PER_PLATFORM` | No | Cap new saves per source per run (0 = unlimited) |
+| `MIN_TIER_YIELD` | No | New jobs required from Tier 1 before skipping Tier 2+3 (default 5) |
+| `UVICORN_WORKERS` | No | API worker count (default 2) |
+
+---
+
+## External software integration
+
+See [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) for:
+- How to sync a user profile (`POST /api/v1/users/sync`)
+- Full payload reference (job titles, keywords, negative filters, callback URL)
+- Webhook payload format
+
+---
+
+## Project layout
+
+```
+searching-eng/
+├── api/                    FastAPI app (main.py)
+├── app/                    Streamlit dashboard
+├── automation/             Core logic
+│   ├── orchestrator.py     Multi-user tiered scrape runner
+│   ├── job_scorer.py       TF-IDF relevance scorer (0–100)
+│   ├── job_verifier.py     Expired link checker
+│   ├── webhook_dispatcher.py
+│   ├── profile_fetcher.py  Profile loading (Supabase API + local SQLite fallback)
+│   ├── send_email.py
+│   ├── db_helper.py        SQLite WAL + retry helper (single write path)
+│   └── tunnel_update_notifier.py
+├── scrapers/
+│   ├── _shared.py          Shared helpers (strip_html, chrome version, keyword match)
+│   ├── linkedin_scraper.py
+│   ├── itjobs_scraper.py
+│   ├── companies_scraper.py
+│   ├── sapo_scraper.py
+│   ├── expresso_scraper.py
+│   ├── indeed_scraper.py
+│   └── landing_scraper.py
+├── config/
+│   ├── companies.json      85+ companies with ATS board config
+│   └── crontab
+├── init_db.py              Idempotent DB migrations (Schema v6)
+├── Dockerfile
+├── docker-compose.yml
+└── .env.example
+```
+
+---
+
+## Schema
+
+SQLite (WAL mode), Schema v6. Two main tables:
+
+- `vagas` — jobs: `titulo`, `empresa`, `plataforma`, `link`, `relevance_score`, `status`, `salario`, `tipo_contrato`, `nivel_experiencia`
+- `users_perfil` — per-user config: `job_titles`, `keywords`, `negative_keywords`, `negative_companies`, `locations`, `callback_url`, `search_description`, `min_salary`, `experience_levels`
+
+All schema migrations are inline in `init_db.py` (idempotent, runs on container start).
