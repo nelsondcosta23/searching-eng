@@ -71,11 +71,15 @@ try:
             job_titles          TEXT NOT NULL,
             keywords            TEXT,
             negative_keywords   TEXT,
+            negative_companies  TEXT,
             locations           TEXT,
             is_remote           INTEGER DEFAULT 0,
             min_salary          INTEGER DEFAULT 0,
             experience_levels   TEXT,
             job_profile         TEXT DEFAULT 'generalist',
+            contract_type       TEXT,
+            required_languages  TEXT,
+            search_description  TEXT,
             callback_url        TEXT,
             last_webhook_sent   TIMESTAMP,
             created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -88,10 +92,14 @@ try:
     user_migrations = [
         ("keywords",            "TEXT"),
         ("negative_keywords",   "TEXT"),
+        ("negative_companies",  "TEXT"),
         ("callback_url",        "TEXT"),
         ("last_webhook_sent",   "TIMESTAMP"),
         ("is_active",           "INTEGER DEFAULT 1"),
         ("job_profile",         "TEXT DEFAULT 'generalist'"),
+        ("contract_type",       "TEXT"),
+        ("required_languages",  "TEXT"),
+        ("search_description",  "TEXT"),
     ]
     for col_name, col_type in user_migrations:
         if col_name not in existing_user_cols:

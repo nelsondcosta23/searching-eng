@@ -34,10 +34,11 @@ CONFIG_PATH = os.environ.get(
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from automation.profile_fetcher import get_job_titles, get_negative_keywords, get_user_id, strict_keyword_match
-    KEYWORDS = [r.lower() for r in get_job_titles()]
-    NEGATIVE_KEYWORDS = get_negative_keywords()
-    USER_ID = get_user_id()
+    from automation.profile_fetcher import get_job_titles, get_negative_keywords, get_negative_companies, get_user_id, strict_keyword_match
+    KEYWORDS           = [r.lower() for r in get_job_titles()]
+    NEGATIVE_KEYWORDS  = get_negative_keywords()
+    NEGATIVE_COMPANIES = get_negative_companies()
+    USER_ID            = get_user_id()
 except ImportError as _e:
     print(f"FATAL: profile_fetcher import failed: {_e}. Aborting companies_scraper.", file=__import__('sys').stderr)
     __import__('sys').exit(1)
@@ -357,7 +358,8 @@ def _passes_keyword_filters(job: dict) -> tuple[bool, str]:
     Filter uses job TITLE only — description matching causes false positives
     (e.g. 'Software Engineer' passing a CTO filter because desc says 'technology').
     """
-    title = job['titulo'].lower()
+    title   = job['titulo'].lower()
+    empresa = (job.get('empresa') or '').lower()
 
     if KEYWORDS and not strict_keyword_match(title, KEYWORDS):
         return False, 'no keyword match'
@@ -365,6 +367,10 @@ def _passes_keyword_filters(job: dict) -> tuple[bool, str]:
     blocked = negative_keyword_match(title, NEGATIVE_KEYWORDS)
     if blocked:
         return False, f"negative keyword '{blocked}'"
+
+    # Company blacklist — partial match, case-insensitive
+    if NEGATIVE_COMPANIES and any(nc in empresa for nc in NEGATIVE_COMPANIES):
+        return False, f"blocked company '{empresa}'"
 
     return True, ''
 

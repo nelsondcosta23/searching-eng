@@ -89,7 +89,11 @@ def get_local_profile(user_id=None):
     Priority: explicit user_id arg > TARGET_USER_ID env var > first active user.
     Returns a dict with: user_id, keywords (list), negative_keywords (list), job_titles (list), locations (string).
     """
-    result = {'user_id': None, 'keywords': [], 'negative_keywords': [], 'job_titles': [], 'locations': ''}
+    result = {
+        'user_id': None, 'keywords': [], 'negative_keywords': [], 'job_titles': [],
+        'locations': '', 'negative_companies': [], 'contract_type': [],
+        'required_languages': [], 'search_description': '',
+    }
     try:
         if not os.path.exists(_DB_PATH):
             return result
@@ -100,7 +104,9 @@ def get_local_profile(user_id=None):
         conn = sqlite3.connect(_DB_PATH, timeout=5)
         conn.row_factory = sqlite3.Row
 
-        _cols = "user_id, keywords, negative_keywords, job_titles, locations, is_remote, min_salary, experience_levels, job_profile"
+        _cols = ("user_id, keywords, negative_keywords, negative_companies, job_titles, locations, "
+                 "is_remote, min_salary, experience_levels, job_profile, "
+                 "contract_type, required_languages, search_description")
         if target_uid:
             row = conn.execute(
                 f"SELECT {_cols} FROM users_perfil WHERE user_id = ? AND is_active = 1",
@@ -125,15 +131,23 @@ def get_local_profile(user_id=None):
 
             # Extended fields (may not exist in older schema rows)
             try:
-                result['is_remote']         = bool(row['is_remote'])
-                result['min_salary']        = int(row['min_salary']) if row['min_salary'] else 0
-                result['experience_levels'] = [e.strip() for e in (row['experience_levels'] or '').split(',') if e.strip()]
-                result['job_profile']       = (row['job_profile'] or 'generalist').lower().strip()
+                result['is_remote']          = bool(row['is_remote'])
+                result['min_salary']         = int(row['min_salary']) if row['min_salary'] else 0
+                result['experience_levels']  = [e.strip() for e in (row['experience_levels'] or '').split(',') if e.strip()]
+                result['job_profile']        = (row['job_profile'] or 'generalist').lower().strip()
+                result['negative_companies'] = [c.strip().lower() for c in (row['negative_companies'] or '').split(',') if c.strip()]
+                result['contract_type']      = [c.strip().lower() for c in (row['contract_type'] or '').split(',') if c.strip()]
+                result['required_languages'] = [l.strip().lower() for l in (row['required_languages'] or '').split(',') if l.strip()]
+                result['search_description'] = (row['search_description'] or '').strip()
             except Exception:
-                result['is_remote']         = False
-                result['min_salary']        = 0
-                result['experience_levels'] = []
-                result['job_profile']       = 'generalist'
+                result['is_remote']          = False
+                result['min_salary']         = 0
+                result['experience_levels']  = []
+                result['job_profile']        = 'generalist'
+                result['negative_companies'] = []
+                result['contract_type']      = []
+                result['required_languages'] = []
+                result['search_description'] = ''
 
             if any([result['keywords'], result['negative_keywords'], result['job_titles']]):
                 print(f"[profile_fetcher] Local profile loaded for '{result['user_id']}': "
@@ -243,20 +257,34 @@ def get_negative_keywords():
     return merged
 
 
+def get_negative_companies() -> list[str]:
+    """Returns company names to exclude. Partial match, case-insensitive."""
+    target_uid = os.environ.get('TARGET_USER_ID')
+    if target_uid:
+        return get_local_profile(target_uid).get('negative_companies', [])
+    return get_local_profile().get('negative_companies', [])
+
+
 def get_search_description():
     """Returns the user's professional profile description (for TF-IDF scoring).
 
-    Priority: TARGET_USER_ID env > API search_description > local users_perfil.
+    Priority: TARGET_USER_ID env > explicit search_description field > API > synthesised.
+    When search_description is set, it gives the scorer much richer vocabulary than
+    the keyword+title synthesis fallback.
     """
     target_uid = os.environ.get('TARGET_USER_ID')
     if target_uid:
         local = get_local_profile(target_uid)
+        if local.get('search_description'):
+            return local['search_description']
         return " ".join(local['keywords'] + local['job_titles'])
     api_desc = _get_strategy().get('search_description', '')
     if api_desc:
         return api_desc
     # Fallback: synthesize from local profile when API is unavailable.
     local = get_local_profile()
+    if local.get('search_description'):
+        return local['search_description']
     return " ".join(local['keywords'] + local['job_titles'])
 
 

@@ -21,11 +21,12 @@ PLATAFORMA = 'LinkedIn PT (Selenium)'
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from automation.db_helper import save_job, job_exists
 try:
-    from automation.profile_fetcher import generate_linkedin_urls, strict_keyword_match, get_user_id, get_job_titles, get_negative_keywords
-    PESQUISAS = generate_linkedin_urls()   # dict: key → {url, is_priority}
-    USER_ID = get_user_id()
-    KEYWORDS = get_job_titles()
-    NEGATIVE_KEYWORDS = get_negative_keywords()
+    from automation.profile_fetcher import generate_linkedin_urls, strict_keyword_match, get_user_id, get_job_titles, get_negative_keywords, get_negative_companies
+    PESQUISAS          = generate_linkedin_urls()
+    USER_ID            = get_user_id()
+    KEYWORDS           = get_job_titles()
+    NEGATIVE_KEYWORDS  = get_negative_keywords()
+    NEGATIVE_COMPANIES = get_negative_companies()
 except ImportError as _e:
     print(f"FATAL: profile_fetcher import failed: {_e}. Aborting linkedin_scraper.", file=__import__('sys').stderr)
     __import__('sys').exit(1)
@@ -369,12 +370,16 @@ def processar_uma_pesquisa(cat_nome: str, url_info: dict, driver, vagas_ja_inser
             seen_jobs.add(dedup_key)
 
             # Apply keyword filters BEFORE deep extraction to save Selenium budget.
-            titulo = job.get('titulo', '') or ''
+            titulo  = job.get('titulo', '') or ''
+            empresa = (job.get('empresa', '') or '').lower()
             if KEYWORDS and not strict_keyword_match(titulo, KEYWORDS):
                 continue
             blocked_kw = negative_keyword_match(titulo, NEGATIVE_KEYWORDS)
             if blocked_kw:
                 print(f"    [BLOCKED] '{titulo}' contains a negative keyword ({blocked_kw}).")
+                continue
+            if NEGATIVE_COMPANIES and any(nc in empresa for nc in NEGATIVE_COMPANIES):
+                print(f"    [BLOCKED COMPANY] '{job.get('empresa')}' is in the blocked companies list.")
                 continue
 
             # Try HTTP deep extraction first (faster), fallback to Selenium

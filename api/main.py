@@ -270,11 +270,23 @@ class UserProfile(BaseModel):
     experience_levels: Optional[List[str]] = []
     keywords: Optional[List[str]] = []
     negative_keywords: Optional[List[str]] = []
+    negative_companies: Optional[List[str]] = []
+    """Company names to completely exclude (partial match, case-insensitive).
+    Example: ['Canonical', 'Dellent', 'Randstad'] — no jobs from these companies will be saved."""
+    contract_type: Optional[List[str]] = []
+    """Preferred contract types. Example: ['full-time']. Jobs with other types are deprioritised."""
+    required_languages: Optional[List[str]] = []
+    """Languages the user speaks. Example: ['portuguese', 'english'].
+    Used to filter out jobs that require languages not in this list."""
+    search_description: Optional[str] = None
+    """Rich free-text description of the ideal role and professional background.
+    Used directly by the TF-IDF scorer to improve relevance matching.
+    Example: 'CTO with 10 years in SaaS B2B, leading product and engineering teams...'"""
     job_profile: Optional[str] = None
     """Defines which scrapers run for this user. Must be one of the values
     returned by GET /api/v1/profiles. Unknown values fall back to 'generalist'.
     If omitted, the existing value in the DB is preserved (no overwrite)."""
-    callback_url: Optional[str] = None   # Webhook URL to push job results
+    callback_url: Optional[str] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -579,19 +591,24 @@ def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_ke
                 print(f"[sync] Unknown job_profile '{raw_profile}' → normalised to 'generalist'")
 
     # Convert lists to comma-separated strings for SQLite
-    job_titles_str        = ", ".join(profile.job_titles)          if profile.job_titles          else ""
-    locations_str         = ", ".join(profile.locations)           if profile.locations           else ""
-    exp_levels_str        = ", ".join(profile.experience_levels)   if profile.experience_levels   else ""
-    keywords_str          = ", ".join(profile.keywords)            if profile.keywords            else ""
-    negative_keywords_str = ", ".join(profile.negative_keywords)   if profile.negative_keywords   else ""
+    job_titles_str          = ", ".join(profile.job_titles)            if profile.job_titles            else ""
+    locations_str           = ", ".join(profile.locations)             if profile.locations             else ""
+    exp_levels_str          = ", ".join(profile.experience_levels)     if profile.experience_levels     else ""
+    keywords_str            = ", ".join(profile.keywords)              if profile.keywords              else ""
+    negative_keywords_str   = ", ".join(profile.negative_keywords)     if profile.negative_keywords     else ""
+    negative_companies_str  = ", ".join(profile.negative_companies)    if profile.negative_companies    else ""
+    contract_type_str       = ", ".join(profile.contract_type)         if profile.contract_type         else ""
+    required_languages_str  = ", ".join(profile.required_languages)    if profile.required_languages    else ""
 
     upsert_sql = '''
         INSERT INTO users_perfil (
             user_id, is_active, job_titles, locations, is_remote, min_salary,
-            experience_levels, keywords, negative_keywords, job_profile, callback_url,
+            experience_levels, keywords, negative_keywords, negative_companies,
+            contract_type, required_languages, search_description,
+            job_profile, callback_url,
             created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id) DO UPDATE SET
             is_active=excluded.is_active,
             job_titles=excluded.job_titles,
@@ -601,6 +618,10 @@ def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_ke
             experience_levels=excluded.experience_levels,
             keywords=excluded.keywords,
             negative_keywords=excluded.negative_keywords,
+            negative_companies=excluded.negative_companies,
+            contract_type=excluded.contract_type,
+            required_languages=excluded.required_languages,
+            search_description=excluded.search_description,
             job_profile=excluded.job_profile,
             callback_url=excluded.callback_url,
             updated_at=CURRENT_TIMESTAMP
@@ -615,6 +636,10 @@ def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_ke
         exp_levels_str,
         keywords_str,
         negative_keywords_str,
+        negative_companies_str,
+        contract_type_str,
+        required_languages_str,
+        profile.search_description,
         job_profile_norm,
         profile.callback_url,
     )

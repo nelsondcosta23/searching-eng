@@ -26,9 +26,10 @@ MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from automation.profile_fetcher import get_job_titles, get_negative_keywords, get_user_id, strict_keyword_match
+    from automation.profile_fetcher import get_job_titles, get_negative_keywords, get_negative_companies, get_user_id, strict_keyword_match
     KEYWORDS = [r.lower() for r in get_job_titles()]
-    NEGATIVE_KEYWORDS = get_negative_keywords()
+    NEGATIVE_KEYWORDS  = get_negative_keywords()
+    NEGATIVE_COMPANIES = get_negative_companies()
     USER_ID = get_user_id()
 except ImportError as _e:
     print(f"FATAL: profile_fetcher import failed: {_e}. Aborting expresso_scraper.", file=__import__('sys').stderr)
@@ -248,9 +249,11 @@ def iniciar_scraper_expresso():
                         continue
                     if job_exists(link):
                         continue
-
                     print(f"  [NEW] {titulo} | {job['localizacao']}")
                     detail = _extract_detail(driver, link)
+
+                    if NEGATIVE_COMPANIES and any(nc in (detail['empresa'] or '').lower() for nc in NEGATIVE_COMPANIES):
+                        continue
 
                     ok = save_job(
                         user_id=USER_ID,

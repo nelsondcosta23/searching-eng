@@ -19,11 +19,12 @@ from selenium.webdriver.support import expected_conditions as EC
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from automation.db_helper import save_job, job_exists
 try:
-    from automation.profile_fetcher import generate_sapo_urls, strict_keyword_match, get_user_id, get_job_titles, get_negative_keywords
-    PESQUISAS = generate_sapo_urls()
-    USER_ID = get_user_id()
-    KEYWORDS = get_job_titles()
-    NEGATIVE_KEYWORDS = get_negative_keywords()
+    from automation.profile_fetcher import generate_sapo_urls, strict_keyword_match, get_user_id, get_job_titles, get_negative_keywords, get_negative_companies
+    PESQUISAS          = generate_sapo_urls()
+    USER_ID            = get_user_id()
+    KEYWORDS           = get_job_titles()
+    NEGATIVE_KEYWORDS  = get_negative_keywords()
+    NEGATIVE_COMPANIES = get_negative_companies()
 except ImportError as _e:
     print(f"FATAL: profile_fetcher import failed: {_e}. Aborting sapo_scraper.", file=__import__('sys').stderr)
     __import__('sys').exit(1)
@@ -209,6 +210,9 @@ def processar_pesquisa(pesquisa_nome, url_pesquisa, driver, total_novas_global):
                 continue
 
             if negative_keyword_match(titulo, NEGATIVE_KEYWORDS):
+                continue
+
+            if NEGATIVE_COMPANIES and any(nc in empresa.lower() for nc in NEGATIVE_COMPANIES):
                 continue
 
             # --- Extract all rich data directly from the JSON ---

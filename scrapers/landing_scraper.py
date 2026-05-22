@@ -19,12 +19,12 @@ API_BASE = "https://landing.jobs/api/v1"
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from automation.profile_fetcher import get_job_titles, get_negative_keywords, get_user_id, get_target_roles, strict_keyword_match
-    KEYWORDS = [r.lower() for r in get_job_titles()]
-    NEGATIVE_KEYWORDS = get_negative_keywords()
-    USER_ID = get_user_id()
-    # Broader set: job titles + keywords (cloud, AI, automation…) for description-level filter
-    BROAD_TERMS = [r.lower() for r in get_target_roles()]
+    from automation.profile_fetcher import get_job_titles, get_negative_keywords, get_negative_companies, get_user_id, get_target_roles, strict_keyword_match
+    KEYWORDS           = [r.lower() for r in get_job_titles()]
+    NEGATIVE_KEYWORDS  = get_negative_keywords()
+    NEGATIVE_COMPANIES = get_negative_companies()
+    USER_ID            = get_user_id()
+    BROAD_TERMS        = [r.lower() for r in get_target_roles()]
 except ImportError as _e:
     print(f"FATAL: profile_fetcher import failed: {_e}. Aborting landing_scraper.", file=__import__('sys').stderr)
     __import__('sys').exit(1)
@@ -198,6 +198,9 @@ def iniciar_scraper_landing():
                 continue
 
             empresa = _get_company_name(job['company_id'])
+
+            if NEGATIVE_COMPANIES and any(nc in empresa.lower() for nc in NEGATIVE_COMPANIES):
+                continue
 
             print(f"  [NEW] {job['titulo']} @ {empresa} | {job['localizacao']}")
 

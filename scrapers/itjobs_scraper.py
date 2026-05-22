@@ -27,14 +27,12 @@ API_BASE = "https://api.itjobs.pt"
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from automation.profile_fetcher import get_negative_keywords, get_user_id, strict_keyword_match, get_local_profile
-    _profile = get_local_profile()
-    # Use the raw job_titles from the profile — no enriched combos ("cto ai", etc.).
-    # ITJobs full-text search is good enough with plain titles; enriched queries
-    # add noise and return zero results for leadership roles.
-    KEYWORDS = [t.lower() for t in (_profile.get('job_titles') or [])] or ["developer"]
-    NEGATIVE_KEYWORDS = get_negative_keywords()
-    USER_ID = get_user_id()
+    from automation.profile_fetcher import get_negative_keywords, get_negative_companies, get_user_id, strict_keyword_match, get_local_profile
+    _profile           = get_local_profile()
+    KEYWORDS           = [t.lower() for t in (_profile.get('job_titles') or [])] or ["developer"]
+    NEGATIVE_KEYWORDS  = get_negative_keywords()
+    NEGATIVE_COMPANIES = get_negative_companies()
+    USER_ID            = get_user_id()
 except ImportError as _e:
     print(f"FATAL: profile_fetcher import failed: {_e}. Aborting itjobs_scraper.", file=__import__('sys').stderr)
     __import__('sys').exit(1)
@@ -241,6 +239,8 @@ def iniciar_scraper_itjobs():
                 blocked_kw = negative_keyword_match(texto_busca, NEGATIVE_KEYWORDS)
                 if blocked_kw:
                     print(f"  [BLOCKED] '{job['titulo']}' contains a negative keyword ({blocked_kw}).")
+                    continue
+                if NEGATIVE_COMPANIES and any(nc in job['empresa'].lower() for nc in NEGATIVE_COMPANIES):
                     continue
                 if job_exists(job['link']):
                     continue
