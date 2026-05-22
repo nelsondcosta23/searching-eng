@@ -166,9 +166,26 @@ def _score_job(titulo: str, empresa: str, descricao: str, observacoes: str,
             if term in desc_tokens:
                 raw_score += weight * 1
 
-    # Normalize to 0–100 base. Divisor 300 spreads scores across the full scale;
-    # 150 compressed ~80% of relevant jobs into the 90-100 band indistinguishably.
-    normalized = min(100, int((raw_score / 300.0) * 100))
+    # Normalize to 0–100. Divisor 175 keeps genuine title matches visible
+    # (CTO exact match → raw≈60 → score≈34 before floor) while still
+    # preventing keyword-spam descriptions from dominating.
+    normalized = min(100, int((raw_score / 175.0) * 100))
+
+    # --- Title-match floor: guarantee score ≥ 55 when a profile role term
+    # appears in the job title — prevents sparse descriptions from burying
+    # genuinely relevant roles. Checks both token matches (weight ≥ 8) and
+    # phrase matches against the raw title text (catches generic-token roles
+    # like "Head of Technology" whose tokens all have weight 2.0). ---
+    if profile_terms:
+        title_text_lower = titulo.lower()
+        has_title_match = any(
+            (not term.startswith('__phrase__') and term in title_tokens and weight >= 8.0)
+            or (term.startswith('__phrase__') and weight >= 15.0 and
+                re.search(r'\b' + re.escape(term.replace('__phrase__', '')) + r'\b', title_text_lower))
+            for term, weight in profile_terms.items()
+        )
+        if has_title_match:
+            normalized = max(normalized, 55)
 
     # --- Salary modifier ---
     if min_salary > 0:
