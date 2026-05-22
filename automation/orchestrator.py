@@ -415,11 +415,25 @@ def run_for_user(user_id: str, job_profile: str = 'generalist') -> dict:
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _celery_available() -> bool:
+    """Returns True when a Redis broker is reachable and Celery is installed."""
+    try:
+        from automation.celery_app import app as celery_app
+        celery_app.broker_connection().ensure_connection(max_retries=1, timeout=2)
+        return True
+    except Exception:
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description='Job search orchestrator')
     parser.add_argument(
         '--jitter', type=int, default=0, metavar='MINUTES',
         help='Sleep a random 0–MINUTES delay before starting (randomises run time).'
+    )
+    parser.add_argument(
+        '--direct', action='store_true',
+        help='Force direct (non-Celery) mode even when Redis is available.'
     )
     args = parser.parse_args()
 
@@ -429,13 +443,48 @@ def main():
         print(f'[jitter] Waiting {delay_s // 60}m {delay_s % 60}s before starting...')
         time.sleep(delay_s)
 
+    # ── Mode selection ────────────────────────────────────────────────────────
+    # When Celery/Redis is available, dispatch per-user tasks to the queue.
+    # Each user runs in parallel on a worker process with proper rate limiting.
+    # When Redis is unavailable (single-machine dev setup), fall back to the
+    # original sequential mode — zero config required to run locally.
+    use_celery = not args.direct and _celery_available()
+
+    if use_celery:
+        _run_celery_mode()
+    else:
+        if not args.direct:
+            print('[orchestrator] Redis not reachable — falling back to direct mode.')
+        _run_direct_mode()
+
+
+def _run_celery_mode():
+    """Dispatch one Celery task per user, then wait for global post-processing."""
+    from automation.tasks import dispatch_all_users, run_global_post_processing
+    from celery import group
+
+    users = get_active_users()
+    if not users:
+        print('[orchestrator] No active users. Exiting.')
+        return
+
+    print(f"\n{'#'*60}")
+    print(f'# ORCHESTRATOR — Celery mode ({len(users)} users)')
+    print(f'# Tasks dispatched to queue — workers run them in parallel')
+    print(f"{'#'*60}")
+
+    result = dispatch_all_users.delay()
+    print(f'[celery] dispatch_all_users task dispatched: {result.id}')
+    print('[celery] Monitor at http://localhost:5555 (Flower)')
+
+
+def _run_direct_mode():
+    """Original sequential mode — runs all users one by one in this process."""
     # Global lock — prevents concurrent orchestrator instances
     if os.path.exists(GLOBAL_LOCK):
         try:
             with open(GLOBAL_LOCK) as f:
                 pid = f.read().strip()
-            # psutil.pid_exists works cross-platform (Linux + Windows).
-            # os.path.exists('/proc/<pid>') only works on Linux.
             if pid and _is_orchestrator_pid(int(pid)):
                 print(f'[lock] Orchestrator already running (PID {pid}). Exiting.')
                 sys.exit(0)
@@ -457,13 +506,11 @@ def main():
             sys.exit(0)
 
         print(f"\n{'#'*60}")
-        print(f'# SCRAPER ORCHESTRATOR — Multi-user, tiered')
+        print(f'# ORCHESTRATOR — Direct mode ({len(users)} user(s), sequential)')
         print(f'# Start: {t_start.strftime("%Y-%m-%d %H:%M:%S")}')
-        print(f'# Active users: {len(users)}')
         print(f'# Tier yield threshold: {MIN_TIER_YIELD} new jobs')
         print(f"{'#'*60}")
 
-        # ── Process each user in sequence ────────────────────────────────────
         all_user_results = {}
         for user in users:
             uid     = user['user_id']
@@ -471,16 +518,14 @@ def main():
 
             user_lock = _acquire_user_lock(uid)
             if user_lock is None:
-                print(f'\n[orchestrator] User {uid[:8]} is already being processed by another instance. Skipping.')
+                print(f'\n[orchestrator] User {uid[:8]} already being processed. Skipping.')
                 continue
-
             try:
                 results = run_for_user(uid, profile)
                 all_user_results[uid] = results
             finally:
                 _release_user_lock(user_lock)
 
-        # ── Shared post-processing (all users) ───────────────────────────────
         print(f"\n{'#'*55}")
         print('# VERIFICATION — Checking expired links (all users)')
         print(f"{'#'*55}")
@@ -491,7 +536,6 @@ def main():
         print(f"{'#'*55}")
         _run_phase('Webhook', os.path.join(BASE_DIR, 'automation', 'webhook_dispatcher.py'))
 
-        # ── Final summary ─────────────────────────────────────────────────────
         t_end = datetime.now()
         total_s = int((t_end - t_start).total_seconds())
 

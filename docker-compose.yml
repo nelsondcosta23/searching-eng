@@ -1,4 +1,124 @@
 services:
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Task broker — Redis
+  # Celery uses this as both broker and result backend.
+  # Set REDIS_URL=redis://redis:6379/0 in .env to activate Celery mode.
+  # When Redis is absent, orchestrator falls back to sequential direct mode.
+  # ────────────────────────────────────────────────────────────────────────────
+  redis:
+    container_name: redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Celery Selenium Worker — handles LinkedIn, Indeed, Sapo, Expresso
+  # Low concurrency (--concurrency=2) because Chrome is memory-heavy (~500MB each).
+  # ────────────────────────────────────────────────────────────────────────────
+  celery_selenium:
+    container_name: celery_selenium
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    shm_size: 4gb
+    volumes:
+      - .:/app
+      - ./database:/app/database
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DISPLAY=:99
+    working_dir: /app
+    command: >
+      bash -c "
+        Xvfb :99 -screen 0 1920x1080x24 &
+        celery -A automation.tasks worker
+          --queues=scraping.selenium
+          --concurrency=2
+          --hostname=selenium@%h
+          --loglevel=info
+          --logfile=/app/logs/celery_selenium.log
+      "
+    depends_on:
+      redis:
+        condition: service_healthy
+      python_scraper:
+        condition: service_healthy
+    profiles:
+      - celery
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Celery API Worker — handles ITJobs, Companies, Landing (no Chrome needed)
+  # Higher concurrency (--concurrency=8) since tasks are pure HTTP.
+  # ────────────────────────────────────────────────────────────────────────────
+  celery_api:
+    container_name: celery_api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - .:/app
+      - ./database:/app/database
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    working_dir: /app
+    command: >
+      celery -A automation.tasks worker
+        --queues=scraping.api,post.processing
+        --concurrency=8
+        --hostname=api@%h
+        --loglevel=info
+        --logfile=/app/logs/celery_api.log
+    depends_on:
+      redis:
+        condition: service_healthy
+      python_scraper:
+        condition: service_healthy
+    profiles:
+      - celery
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Flower — real-time Celery task monitoring UI
+  # Access at http://localhost:5555
+  # ────────────────────────────────────────────────────────────────────────────
+  flower:
+    container_name: flower
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    working_dir: /app
+    ports:
+      - "127.0.0.1:5555:5555"
+    command: celery -A automation.tasks flower --port=5555 --loglevel=info
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - celery
   python_scraper:
     container_name: python_scraper
     build:
@@ -114,3 +234,6 @@ services:
     depends_on:
       cloudflare_tunnel:
         condition: service_started
+volumes:
+  redis_data:
+    driver: local
