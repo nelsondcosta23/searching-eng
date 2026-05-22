@@ -8,6 +8,7 @@ URL configured in the environment.
 from __future__ import annotations
 
 import argparse
+from typing import Optional
 import json
 import os
 import re
@@ -23,12 +24,12 @@ LOG_PATTERN = re.compile(r"https://[\w\-]+\.trycloudflare\.com")
 DEFAULT_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tmp', 'last_tunnel_url.txt')
 
 
-def parse_logs_for_tunnel_url(log_text: str) -> str | None:
+def parse_logs_for_tunnel_url(log_text: str) -> Optional[str]:
     matches = LOG_PATTERN.findall(log_text)
     return matches[-1] if matches else None
 
 
-def load_last_tunnel_url(state_path: str) -> str | None:
+def load_last_tunnel_url(state_path: str) -> Optional[str]:
     try:
         with open(state_path, 'r', encoding='utf-8') as f:
             value = f.read().strip()
@@ -60,7 +61,7 @@ def get_docker_logs(container: str, tail: int = 200) -> str:
         raise RuntimeError(f"Unable to read docker logs for container '{container}': {exc}")
 
 
-def read_tunnel_url_from_file(log_path: str) -> str | None:
+def read_tunnel_url_from_file(log_path: str) -> Optional[str]:
     try:
         with open(log_path, 'r', encoding='utf-8') as f:
             text = f.read()

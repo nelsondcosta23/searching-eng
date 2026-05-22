@@ -24,6 +24,7 @@ import argparse
 import sqlite3
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional
 
 BASE_DIR     = os.environ.get('APP_DIR', '/app')
 SCRAPERS_DIR = os.path.join(BASE_DIR, 'scrapers')
@@ -110,7 +111,7 @@ _USER_LOCKS_DIR = os.path.join(BASE_DIR, 'database', 'user_locks')
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _acquire_user_lock(user_id: str) -> str | None:
+def _acquire_user_lock(user_id: str) -> Optional[str]:
     """Try to acquire an exclusive lock for user_id.
 
     Returns the lock file path on success, None when the user is already
@@ -141,7 +142,7 @@ def _acquire_user_lock(user_id: str) -> str | None:
         return None   # proceed without lock rather than silently skip
 
 
-def _release_user_lock(lock_path: str | None):
+def _release_user_lock(lock_path: Optional[str]):
     if lock_path:
         try:
             os.remove(lock_path)

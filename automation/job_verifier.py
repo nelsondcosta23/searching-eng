@@ -6,6 +6,7 @@ import time
 import random
 import os
 from datetime import datetime
+from typing import Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -157,7 +158,7 @@ def verify_active_jobs():
         import undetected_chromedriver as uc
         from scrapers._shared import init_chrome_with_timeout
 
-        def _detect_chrome_version() -> int | None:
+        def _detect_chrome_version() -> Optional[int]:
             try:
                 r = _sub.run(['google-chrome', '--version'], capture_output=True, text=True, timeout=5)
                 m = _re.search(r'(\d+)\.', r.stdout)
