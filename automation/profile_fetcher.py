@@ -28,6 +28,13 @@ _PROFILE_CACHE = None
 CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tmp', 'profile_cache.json')
 CACHE_TTL = 300  # 5 min — profile changes propagate quickly after /users/sync
 
+# Per-user local profile cache — avoids redundant SQLite reads within the
+# same process (scorer alone calls get_local_profile 7+ times per run).
+# Keyed by user_id string (or '__first_active__' for the no-user-id fallback).
+# Intentionally NOT TTL-evicted: a single orchestrator process handles one
+# user at a time and profile data never changes mid-run.
+_LOCAL_PROFILE_CACHE: dict = {}
+
 
 def get_raw_profile():
     """Fetches the job search profile from the Supabase Edge Function with file caching."""
@@ -88,7 +95,17 @@ def get_local_profile(user_id=None):
     Reads a specific user profile from the local users_perfil SQLite table.
     Priority: explicit user_id arg > TARGET_USER_ID env var > first active user.
     Returns a dict with: user_id, keywords (list), negative_keywords (list), job_titles (list), locations (string).
+
+    Results are cached in memory for the lifetime of the process — safe because
+    a single orchestrator run never changes profile data mid-flight.
     """
+    # Resolve cache key before the try block so it's always defined.
+    target_uid = user_id or os.environ.get('TARGET_USER_ID')
+    cache_key = target_uid or '__first_active__'
+
+    if cache_key in _LOCAL_PROFILE_CACHE:
+        return _LOCAL_PROFILE_CACHE[cache_key]
+
     result = {
         'user_id': None, 'keywords': [], 'negative_keywords': [], 'job_titles': [],
         'locations': '', 'negative_companies': [], 'contract_type': [],
@@ -98,16 +115,13 @@ def get_local_profile(user_id=None):
         if not os.path.exists(_DB_PATH):
             return result
 
-        # Determine which user to load
-        target_uid = user_id or os.environ.get('TARGET_USER_ID')
-
         conn = sqlite3.connect(_DB_PATH, timeout=5)
         conn.row_factory = sqlite3.Row
 
         _cols = ("user_id, keywords, negative_keywords, negative_companies, job_titles, locations, "
                  "is_remote, min_salary, experience_levels, job_profile, "
                  "contract_type, required_languages, search_description")
-        if target_uid:
+        if target_uid:  # target_uid is defined above the try block
             row = conn.execute(
                 f"SELECT {_cols} FROM users_perfil WHERE user_id = ? AND is_active = 1",
                 (target_uid,)
@@ -156,6 +170,8 @@ def get_local_profile(user_id=None):
                       f"{len(result['job_titles'])} job titles.")
     except Exception as e:
         print(f"[profile_fetcher] Could not read local users_perfil: {e}")
+
+    _LOCAL_PROFILE_CACHE[cache_key] = result
     return result
 
 

@@ -263,8 +263,13 @@ def processar_pesquisa(pesquisa_nome, url_pesquisa, driver, total_novas_global):
                 obs_list.append(f"Habilitações: {academic_level}")
 
             if not job_exists(link_completo):
-                # Deep extract description and more chips from job page
-                detalhes = extrair_detalhes_sapo(driver, link_completo)
+                # Deep extract description and more chips from job page.
+                # driver may be None when Chrome failed to init — fall back
+                # to snippet only in that case.
+                if driver is not None:
+                    detalhes = extrair_detalhes_sapo(driver, link_completo)
+                else:
+                    detalhes = {'descricao_completa': '', 'observacoes_extra': []}
 
                 # --- Fallback Logic ---
                 final_description = detalhes['descricao_completa']
@@ -309,9 +314,20 @@ def iniciar_scraper_sapo():
     print(f"  Searches: {len(PESQUISAS)}")
     print(f"{'='*50}")
 
+    if not PESQUISAS:
+        print("  [Sapo] No searches generated — profile has no PT-compatible locations. Skipping.")
+        return
+
+    # Chrome is only needed for deep-extraction of individual job pages.
+    # Try to init it once; if it fails we continue in HTTP-only mode (snippet
+    # descriptions only) rather than aborting the entire scraper.
     driver = None
     try:
         driver = configurar_driver()
+    except Exception as e:
+        print(f"  [Sapo] ⚠ Chrome init failed — running in HTTP-only mode (no deep extraction): {e}")
+
+    try:
         total_novas_global = 0
 
         for pesquisa_nome, url_pesquisa in PESQUISAS.items():

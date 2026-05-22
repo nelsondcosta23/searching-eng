@@ -23,6 +23,7 @@ import json
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime, timedelta
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,6 +44,26 @@ def _day_range(date_str: str) -> tuple:
     return (d.strftime('%Y-%m-%d %H:%M:%S'), (d + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S'))
 
 BANNER = "=" * 55
+
+_SENSITIVE_PARAMS = {'secret', 'token', 'key', 'api_key', 'apikey', 'password', 'pass'}
+
+def _redact_url(url: str) -> str:
+    """Replace sensitive query param values with *** for safe logging."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.query:
+            return url
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        redacted = {
+            k: (['***'] if k.lower() in _SENSITIVE_PARAMS else v)
+            for k, v in params.items()
+        }
+        return urllib.parse.urlunparse(parsed._replace(
+            query=urllib.parse.urlencode(redacted, doseq=True)
+        ))
+    except Exception:
+        return url
+
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH, timeout=15, check_same_thread=False)
@@ -180,7 +201,7 @@ def main():
 
         print(f"{BANNER}")
         print(f"👤 User: {user_id[:8]}...")
-        print(f"🔗 URL:  {callback_url}")
+        print(f"🔗 URL:  {_redact_url(callback_url)}")
 
         jobs = get_todays_top_jobs(user_id, limit=MAX_JOBS)
 
