@@ -111,21 +111,35 @@ _USER_LOCKS_DIR = os.path.join(BASE_DIR, 'database', 'user_locks')
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _is_orchestrator_pid(pid: int) -> bool:
+    """Returns True only if the PID exists AND belongs to an orchestrator process.
+
+    Plain psutil.pid_exists() is not enough — Linux reuses PIDs, so a dead
+    orchestrator's PID can be taken by an unrelated process, causing false
+    positives that block legitimate runs indefinitely.
+    """
+    import psutil
+    try:
+        proc = psutil.Process(pid)
+        cmdline = ' '.join(proc.cmdline()).lower()
+        return 'orchestrator' in cmdline or ('python' in cmdline and 'orchestrat' in cmdline)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+
+
 def _acquire_user_lock(user_id: str) -> Optional[str]:
     """Try to acquire an exclusive lock for user_id.
 
     Returns the lock file path on success, None when the user is already
-    being processed by another orchestrator instance. Uses psutil for
-    cross-platform PID liveness check (works on Windows + Linux).
+    being processed by another orchestrator instance.
     """
-    import psutil
     os.makedirs(_USER_LOCKS_DIR, exist_ok=True)
     lock_path = os.path.join(_USER_LOCKS_DIR, f'{user_id[:8]}.lock')
     if os.path.exists(lock_path):
         try:
             with open(lock_path) as f:
                 pid = f.read().strip()
-            if pid and psutil.pid_exists(int(pid)):
+            if pid and _is_orchestrator_pid(int(pid)):
                 return None     # still running
             os.remove(lock_path)  # stale
         except Exception:
@@ -224,7 +238,7 @@ def run_scraper(name: str, filename: str) -> tuple[str, bool, int]:
 
     except subprocess.TimeoutExpired:
         duration = int((datetime.now() - t_start).total_seconds())
-        print(f'❌ {name}: Killed — exceeded 7200s timeout.')
+        print(f'❌ {name}: Killed — exceeded {timeout}s timeout.')
         return name, False, duration
     except Exception as e:
         duration = int((datetime.now() - t_start).total_seconds())
@@ -425,12 +439,11 @@ def main():
                 pid = f.read().strip()
             # psutil.pid_exists works cross-platform (Linux + Windows).
             # os.path.exists('/proc/<pid>') only works on Linux.
-            import psutil
-            if pid and psutil.pid_exists(int(pid)):
+            if pid and _is_orchestrator_pid(int(pid)):
                 print(f'[lock] Orchestrator already running (PID {pid}). Exiting.')
                 sys.exit(0)
             else:
-                print(f'[lock] Stale lock (PID {pid} dead). Removing.')
+                print(f'[lock] Stale lock (PID {pid} dead/reused). Removing.')
                 os.remove(GLOBAL_LOCK)
         except Exception:
             os.remove(GLOBAL_LOCK)
