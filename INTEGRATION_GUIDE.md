@@ -4,6 +4,121 @@ Este documento descreve tudo o que o software externo precisa de saber para sinc
 
 ---
 
+## ⭐ O que mudou — Actualização 2026-05-22
+
+### Contexto
+
+O sistema foi analisado e constatou-se que a qualidade dos matches era **25/100**:
+- Vagas como "Regional Marketing Manager" pontuavam 93/100
+- Vagas como "Head of Technology" (match perfeito) pontuavam apenas 38/100
+- ~80 vagas da Canonical — irrelevantes — estavam a poluir os resultados
+
+A causa principal: o perfil não tinha **negative_keywords**, **negative_companies** nem uma **search_description** rica. O sistema de scoring não tinha contexto suficiente para distinguir uma vaga relevante de uma irrelevante.
+
+### O que foi adicionado
+
+Foram adicionados **4 campos novos** ao endpoint `POST /api/v1/users/sync`. O teu software precisa de começar a enviar estes campos no próximo sync.
+
+---
+
+### Campo 1 — `negative_companies` ⚡ Impacto imediato
+
+**O que faz:** Lista de empresas cujas vagas são **completamente ignoradas** pelo scraper, mesmo que o título da vaga seja relevante.
+
+**Porquê é necessário:** Empresas como Canonical publicam dezenas de vagas por semana com títulos genéricos ("Product Manager", "Engineering Manager") que passavam todos os filtros. Com este campo, são bloqueadas na entrada — nunca chegam à base de dados.
+
+**Como funciona:** Match parcial e case-insensitive. `"Canonical"` bloqueia `"Canonical Ltd"`, `"canonical"`, etc.
+
+```json
+"negative_companies": ["Canonical", "Dellent", "Randstad", "KWAN", "Adecco"]
+```
+
+**Impacto esperado:** Elimina ~80 vagas irrelevantes por run. Resultado imediato.
+
+---
+
+### Campo 2 — `negative_keywords` (já existia, mas está vazio!)
+
+**O que faz:** Vagas cujo **título** contenha qualquer uma destas palavras são ignoradas pelo scraper.
+
+**Porquê é necessário:** Sem este campo, vagas como "Java Tech Lead", ".NET Tech Lead", "Frontend Tech Lead (React)" eram guardadas porque o título contém "Tech Lead". Com negative_keywords, são bloqueadas pelo scraper antes de entrar na base de dados.
+
+**Importante:** Match por palavra inteira — `"java"` **não** bloqueia "javascript".
+
+```json
+"negative_keywords": [
+  "java", ".net", "frontend", "react", "angular", "vue",
+  "backend", "fullstack", "nodejs", "salesforce", "mulesoft",
+  "qa", "tester", "data engineer", "data analyst",
+  "devops engineer", "estagiário", "intern", "trainee"
+]
+```
+
+**Impacto esperado:** Elimina ~60% das vagas de developer/especialista que não são relevantes para um perfil CTO/Head of Tech.
+
+---
+
+### Campo 3 — `search_description` ⭐ Melhora o ranking
+
+**O que faz:** Texto livre descrevendo o perfil profissional e o que o utilizador procura. O sistema de scoring (TF-IDF) usa este texto para calcular a relevância de cada vaga — quanto mais rico e específico for, melhor consegue distinguir uma vaga boa de uma má.
+
+**Porquê é necessário:** Sem este campo, o scorer só tem os `keywords` e `job_titles` para trabalhar. Uma descrição rica dá ao scorer contexto sobre o sector (SaaS B2B), o tipo de empresa (startup, scale-up), a localização preferida (Portugal, EMEA), e competências específicas (cloud, automação, product strategy).
+
+```json
+"search_description": "CTO com 10 anos de experiência em liderança de equipas de produto e engenharia em startups SaaS B2B. Procura posição executiva em Portugal ou remote EMEA. Background em cloud (AWS/GCP), automação de processos, e desenvolvimento de roadmaps de produto."
+```
+
+**Impacto esperado:** Vagas como "Head of Technology" e "CTO" sobem no ranking. Vagas genéricas de tech sem contexto executivo descem.
+
+---
+
+### Campo 4 — `contract_type` e `required_languages` (logística)
+
+**`contract_type`** — tipos de contrato pretendidos. Vagas com tipo diferente são despriorizadas.
+```json
+"contract_type": ["full-time"]
+```
+
+**`required_languages`** — idiomas que o utilizador fala. Usado para despriorizarn vagas que exigem idiomas não listados (ex: "francês fluente").
+```json
+"required_languages": ["portuguese", "english"]
+```
+
+---
+
+### Acção necessária — o que o teu software tem que fazer
+
+**Já no próximo sync**, incluir os campos novos no payload do `POST /api/v1/users/sync`:
+
+```json
+{
+  "user_id": "<user_id>",
+  "job_titles": ["CTO", "Chief Technology Officer", "Head of Technology", "Head of Engineering"],
+
+  "negative_keywords": [
+    "java", ".net", "frontend", "react", "angular", "vue",
+    "backend", "fullstack", "nodejs", "salesforce", "mulesoft",
+    "qa", "tester", "data engineer", "data analyst", "devops engineer",
+    "estagiário", "intern", "trainee"
+  ],
+
+  "negative_companies": [
+    "Canonical", "Dellent", "Randstad", "KWAN", "Adecco", "Manpower", "Michael Page"
+  ],
+
+  "search_description": "<texto livre sobre o perfil e o que procura>",
+
+  "contract_type": ["full-time"],
+  "required_languages": ["portuguese", "english"]
+}
+```
+
+Não precisas de enviar todos os campos de uma vez — os que omitires ficam com o valor que já está guardado. Os campos **novos** ficam vazios até seres enviados pela primeira vez.
+
+---
+
+---
+
 ## URL base da API
 
 A API é exposta via Cloudflare Tunnel. O URL muda cada vez que o servidor reinicia.
