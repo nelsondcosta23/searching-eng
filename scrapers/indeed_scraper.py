@@ -13,7 +13,6 @@ import os
 import sys
 import tempfile
 import shutil
-import subprocess
 
 # Global Configurations
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
@@ -34,39 +33,19 @@ except ImportError as _e:
     KEYWORDS = []
     NEGATIVE_KEYWORDS = []
 
-from scrapers._shared import negative_keyword_match, init_chrome_with_timeout
+from scrapers._shared import negative_keyword_match, init_chrome_with_timeout, get_chrome_major_version
 
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))   # 0 = unlimited
-MAX_PAGES = int(os.environ.get('INDEED_MAX_PAGES', '3'))        # Pages per search (10 results/page)
+MAX_PAGES = int(os.environ.get('INDEED_MAX_PAGES', '2'))        # Pages per search — reduced from 3; Indeed bot-detection means page 3 rarely yields new jobs
+# Abort the entire scraper after this many consecutive zero-yield searches.
+# Consistent zeros = bot-detection / CAPTCHA — no point burning more Selenium time.
+INDEED_ZERO_ABORT = int(os.environ.get('INDEED_ZERO_ABORT', '3'))
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
-
-def get_chrome_major_version():
-    """Returns Chrome major version — reads from CHROME_VERSION env var if
-    pre-detected by the orchestrator, otherwise detects via subprocess."""
-    cached = os.environ.get('CHROME_VERSION', '')
-    if cached:
-        try:
-            return int(cached)
-        except ValueError:
-            pass
-    try:
-        result = subprocess.run(
-            ['google-chrome', '--version'],
-            capture_output=True, text=True, timeout=5
-        )
-        match = re.search(r'(\d+)\.', result.stdout)
-        if match:
-            version = int(match.group(1))
-            print(f"  [Indeed] Detected Chrome version: {version}")
-            return version
-    except Exception as e:
-        print(f"  [Indeed] Could not detect Chrome version: {e}")
-    return None
 
 def configurar_driver():
     """Configures the Undetected ChromeDriver with stealth optimizations.
@@ -99,8 +78,7 @@ def configurar_driver():
     options.add_argument("--lang=pt-PT,pt;q=0.9,en;q=0.8")
     options.add_argument(f"--user-data-dir={tmp_profile_dir}")
 
-    chrome_version = get_chrome_major_version()
-    driver = init_chrome_with_timeout(options, headless=True, version_main=chrome_version)
+    driver = init_chrome_with_timeout(options, headless=True, version_main=get_chrome_major_version())
     driver._tmp_profile_dir = tmp_profile_dir
     return driver
 
@@ -343,11 +321,23 @@ def iniciar_scraper_indeed():
             pass
 
         total_novas = 0
+        consecutive_zeros = 0
         for cat_nome, cat_url in PESQUISAS.items():
             # processar_uma_pesquisa may restart the driver on Chrome crash;
             # re-bind here so subsequent searches use the new instance.
             novas, driver = processar_uma_pesquisa(driver, cat_nome, cat_url, total_novas)
             total_novas += novas
+
+            # Track consecutive zero-yield searches. When Indeed is blocking us,
+            # every search returns 0 — abort early instead of wasting Selenium time.
+            if novas == 0:
+                consecutive_zeros += 1
+                if consecutive_zeros >= INDEED_ZERO_ABORT:
+                    print(f"\n⚠  [Indeed] {consecutive_zeros} consecutive zero-yield searches — bot-detection likely. Aborting early.")
+                    break
+            else:
+                consecutive_zeros = 0
+
             if MAX_JOBS > 0 and total_novas >= MAX_JOBS:
                 print(f"[GLOBAL LIMIT REACHED] Stopping Indeed multi-search.")
                 break

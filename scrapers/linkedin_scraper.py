@@ -7,7 +7,6 @@ import sys
 import json
 import tempfile
 import shutil
-import subprocess
 from datetime import datetime
 from bs4 import BeautifulSoup
 import undetected_chromedriver as uc
@@ -31,7 +30,7 @@ except ImportError as _e:
     print(f"FATAL: profile_fetcher import failed: {_e}. Aborting linkedin_scraper.", file=__import__('sys').stderr)
     __import__('sys').exit(1)
 
-from scrapers._shared import negative_keyword_match, init_chrome_with_timeout
+from scrapers._shared import negative_keyword_match, init_chrome_with_timeout, get_chrome_major_version, strip_html
 
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))
 PRIORITY_PAGES   = int(os.environ.get('LINKEDIN_PRIORITY_PAGES', '4'))   # pages for priority queries
@@ -57,10 +56,11 @@ def _normalize_linkedin_url(link: str) -> str:
 
 def _build_guest_url(keywords: str, location: str, start: int, remote: bool) -> str:
     import urllib.parse
-    params = {'keywords': keywords, 'location': location, 'start': start}
+    # f_TPR=r86400 — last 24 hours. Applied to ALL searches so we only get fresh
+    # listings and don't waste Selenium budget on jobs already in DB.
+    params = {'keywords': keywords, 'location': location, 'start': start, 'f_TPR': 'r86400'}
     if remote:
         params['f_WT'] = '2'
-        params['f_TPR'] = 'r86400'
     return f"{GUEST_API_BASE}?{urllib.parse.urlencode(params)}"
 
 def _fetch_listing_via_guest_api(keywords: str, location: str, start: int, remote: bool, ua: str) -> list[dict]:
@@ -127,29 +127,6 @@ def _fetch_listing_via_guest_api(keywords: str, location: str, start: int, remot
 # ─────────────────────────────────────────────────────────────────────────────
 # Deep Extraction (Selenium — for individual job description pages)
 # ─────────────────────────────────────────────────────────────────────────────
-def _get_chrome_major_version():
-    """Returns Chrome major version — reads from CHROME_VERSION env var if
-    pre-detected by the orchestrator, otherwise detects via subprocess."""
-    cached = os.environ.get('CHROME_VERSION', '')
-    if cached:
-        try:
-            return int(cached)
-        except ValueError:
-            pass
-    try:
-        result = subprocess.run(
-            ['google-chrome', '--version'],
-            capture_output=True, text=True, timeout=5
-        )
-        match = re.search(r'(\d+)\.', result.stdout)
-        if match:
-            version = int(match.group(1))
-            print(f"  [LinkedIn] Detected Chrome version: {version}")
-            return version
-    except Exception as e:
-        print(f"  [LinkedIn] Could not detect Chrome version: {e}")
-    return None
-
 def _configurar_driver():
     # Clean up any stale lock from old persistent profile (legacy path)
     old_profile_dir = "/tmp/linkedin-chrome-profile"
@@ -175,8 +152,7 @@ def _configurar_driver():
     options.add_argument("--lang=pt-PT,pt;q=0.9,en;q=0.8")
     options.add_argument(f"--user-data-dir={tmp_profile_dir}")
 
-    chrome_version = _get_chrome_major_version()
-    driver = init_chrome_with_timeout(options, headless=True, version_main=chrome_version)
+    driver = init_chrome_with_timeout(options, headless=True, version_main=get_chrome_major_version())
     driver._tmp_profile_dir = tmp_profile_dir
     return driver
 
@@ -304,8 +280,13 @@ def processar_uma_pesquisa(cat_nome: str, url_info: dict, driver, vagas_ja_inser
         start = page_num * 25
         print(f"  → Page {page_num + 1}/{max_pages} (offset={start})")
 
-        # Try fast Guest API first
+        # Try fast Guest API first. On empty result, retry once with a different
+        # User-Agent before paying the Selenium fallback cost — transient 429s
+        # and soft-blocks often clear on a second request.
         jobs_on_page = _fetch_listing_via_guest_api(keywords, location, start, remote, ua)
+        if not jobs_on_page:
+            retry_ua = random.choice([u for u in USER_AGENTS if u != ua] or USER_AGENTS)
+            jobs_on_page = _fetch_listing_via_guest_api(keywords, location, start, remote, retry_ua)
         use_selenium_listing = not jobs_on_page
 
         if use_selenium_listing:

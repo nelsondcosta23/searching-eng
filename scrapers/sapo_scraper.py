@@ -8,7 +8,6 @@ import sys
 import re
 import tempfile
 import shutil
-import subprocess
 from datetime import datetime
 
 import undetected_chromedriver as uc
@@ -29,7 +28,7 @@ except ImportError as _e:
     print(f"FATAL: profile_fetcher import failed: {_e}. Aborting sapo_scraper.", file=__import__('sys').stderr)
     __import__('sys').exit(1)
 
-from scrapers._shared import make_session, DEFAULT_HEADERS, negative_keyword_match, init_chrome_with_timeout
+from scrapers._shared import make_session, DEFAULT_HEADERS, negative_keyword_match, init_chrome_with_timeout, get_chrome_major_version
 
 PLATAFORMA = "Sapo Jobs"
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
@@ -37,29 +36,6 @@ MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))  # 0 = unlimited
 
 HEADERS = DEFAULT_HEADERS
 session = make_session(retries=3)
-
-def get_chrome_major_version():
-    """Returns Chrome major version — reads from CHROME_VERSION env var if
-    pre-detected by the orchestrator, otherwise detects via subprocess."""
-    cached = os.environ.get('CHROME_VERSION', '')
-    if cached:
-        try:
-            return int(cached)
-        except ValueError:
-            pass
-    try:
-        result = subprocess.run(
-            ['google-chrome', '--version'],
-            capture_output=True, text=True, timeout=5
-        )
-        match = re.search(r'(\d+)\.', result.stdout)
-        if match:
-            version = int(match.group(1))
-            print(f"  [Sapo] Detected Chrome version: {version}")
-            return version
-    except Exception as e:
-        print(f"  [Sapo] Could not detect Chrome version: {e}")
-    return None
 
 def configurar_driver():
     """Configures the Undetected ChromeDriver with stealth optimizations.
@@ -90,8 +66,7 @@ def configurar_driver():
     options.add_argument("--lang=pt-PT,pt;q=0.9,en;q=0.8")
     options.add_argument(f"--user-data-dir={tmp_profile_dir}")
 
-    chrome_version = get_chrome_major_version()
-    driver = init_chrome_with_timeout(options, headless=True, version_main=chrome_version)
+    driver = init_chrome_with_timeout(options, headless=True, version_main=get_chrome_major_version())
     driver._tmp_profile_dir = tmp_profile_dir
     return driver
 

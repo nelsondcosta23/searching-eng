@@ -37,7 +37,7 @@ except ImportError as _e:
     __import__('sys').exit(1)
 
 from automation.db_helper import save_job, job_exists
-from scrapers._shared import negative_keyword_match, extract_seniority, init_chrome_with_timeout
+from scrapers._shared import negative_keyword_match, extract_seniority, init_chrome_with_timeout, get_chrome_major_version
 
 import undetected_chromedriver as uc
 from selenium.webdriver.support.ui import WebDriverWait
@@ -50,24 +50,6 @@ BASE_URL = "https://expressoemprego.pt"
 # /emprego/{slug}/{city}/{id}  — the job detail URL pattern.
 # slug may or may not contain a hyphen (e.g. /emprego/cto/porto/12345 is valid).
 _JOB_HREF_RE = re.compile(r'^/emprego/[^/]+/[^/]+/(\d+)$')
-
-
-def get_chrome_major_version():
-    cached = os.environ.get('CHROME_VERSION', '')
-    if cached:
-        try:
-            return int(cached)
-        except ValueError:
-            pass
-    try:
-        import subprocess
-        result = subprocess.run(['google-chrome', '--version'], capture_output=True, text=True, timeout=5)
-        m = re.search(r'(\d+)\.', result.stdout)
-        if m:
-            return int(m.group(1))
-    except Exception:
-        pass
-    return None
 
 
 def _configurar_driver() -> uc.Chrome:

@@ -21,6 +21,7 @@ import time
 import random
 from datetime import datetime
 from urllib.parse import urljoin
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 
 PLATAFORMA = "Companies"
@@ -44,7 +45,7 @@ except ImportError as _e:
     __import__('sys').exit(1)
 
 from automation.db_helper import save_job, job_exists
-from scrapers._shared import negative_keyword_match, make_session, extract_seniority
+from scrapers._shared import negative_keyword_match, make_session, extract_seniority, strip_html
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -75,16 +76,6 @@ _NON_EU_EXCLUDE = re.compile(
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
-def _strip_html(html: str) -> str:
-    if not html:
-        return ''
-    text = re.sub(r'<br\s*/?>', '\n', html, flags=re.I)
-    text = re.sub(r'</(p|li|h\d|div|tr)\s*>', '\n', text, flags=re.I)
-    text = re.sub(r'<li[^>]*>', '• ', text, flags=re.I)
-    text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'\n{3,}', '\n\n', text).strip()
-    return text
-
 
 def _location_passes(location_text: str, filter_regex: str) -> bool:
     """Returns True if the job's location matches the include filter and is NOT in the non-EU exclusion list."""
@@ -135,7 +126,7 @@ def _strategy_greenhouse(company: dict) -> list[dict]:
 
         meta = {m.get('name'): m.get('value') for m in (raw.get('metadata') or []) if isinstance(m, dict)}
         depts = [d.get('name') for d in (raw.get('departments') or []) if isinstance(d, dict) and d.get('name')]
-        descricao = _strip_html(raw.get('content') or '')
+        descricao = strip_html(raw.get('content') or '')
 
         obs_parts = []
         if depts: obs_parts.append(f"Departamento: {', '.join(depts)}")
@@ -198,7 +189,7 @@ def _strategy_lever(company: dict) -> list[dict]:
         else:
             salario = ''
 
-        descricao = _strip_html(raw.get('description') or raw.get('descriptionBody') or '')
+        descricao = strip_html(raw.get('description') or raw.get('descriptionBody') or '')
 
         obs_parts = []
         if cats.get('department'): obs_parts.append(f"Departamento: {cats['department']}")
@@ -258,7 +249,7 @@ def _strategy_ashby(company: dict) -> list[dict]:
         comp = raw.get('compensation') or {}
         salario = comp.get('compensationTierSummary') or ''
 
-        descricao = _strip_html(raw.get('descriptionHtml') or '') or (raw.get('descriptionPlain') or '')
+        descricao = strip_html(raw.get('descriptionHtml') or '') or (raw.get('descriptionPlain') or '')
 
         obs_parts = []
         if raw.get('department'):  obs_parts.append(f"Departamento: {raw['department']}")
@@ -408,24 +399,52 @@ def iniciar_scraper_companies():
     total_saved = 0
     per_company_saved: dict[str, int] = {}
 
-    for company in active:
-        strat_name, strat_fn = _pick_strategy(company)
-        stats[strat_name] = stats.get(strat_name, 0) + 1
+    # Split into API companies (parallelisable) and HTML companies (sequential).
+    # HTML is cheap but site-specific — keep it sequential to avoid hammering
+    # small company sites concurrently.
+    api_companies  = [(c, n, f) for c in active for n, f in [_pick_strategy(c)] if f and n != 'html']
+    html_companies = [(c, n, f) for c in active for n, f in [_pick_strategy(c)] if f and n == 'html']
+    skip_companies = [c for c in active if _pick_strategy(c)[1] is None]
 
-        if strat_fn is None:
+    for c in skip_companies:
+        stats['skip'] = stats.get('skip', 0) + 1
+
+    # Fetch all API companies in parallel (max 8 workers — all are public REST APIs)
+    raw_results: dict[str, list] = {}
+    if api_companies:
+        print(f"\n  ⚡ Fetching {len(api_companies)} API companies in parallel...")
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futures = {ex.submit(fn, company): (company, strat_name)
+                       for company, strat_name, fn in api_companies}
+            for future in as_completed(futures):
+                company, strat_name = futures[future]
+                stats[strat_name] = stats.get(strat_name, 0) + 1
+                try:
+                    raw_results[company['name']] = (strat_name, future.result(timeout=20))
+                except Exception as e:
+                    print(f"    ❌ [{strat_name}] {company['name']}: {e}")
+                    raw_results[company['name']] = (strat_name, [])
+
+    # HTML companies — sequential
+    for company, strat_name, fn in html_companies:
+        stats[strat_name] = stats.get(strat_name, 0) + 1
+        time.sleep(random.uniform(0.3, 0.7))
+        try:
+            raw_results[company['name']] = (strat_name, fn(company))
+        except Exception as e:
+            print(f"    ❌ [html] {company['name']}: {e}")
+            raw_results[company['name']] = (strat_name, [])
+
+    # Process results (filter + save) — always sequential to keep DB writes safe
+    for company in active:
+        if company['name'] not in raw_results:
             continue
+        strat_name, jobs = raw_results[company['name']]
 
         print(f"\n  ▶ [{strat_name}] {company['name']}")
-        time.sleep(random.uniform(0.3, 0.8))
-
-        try:
-            jobs = strat_fn(company)
-        except Exception as e:
-            print(f"    ❌ Strategy '{strat_name}' raised: {e}")
-            continue
-
         if not jobs:
             print(f"    → No jobs returned.")
+            per_company_saved[company['name']] = 0
             continue
 
         kept = 0

@@ -38,7 +38,7 @@ except ImportError as _e:
     __import__('sys').exit(1)
 
 from automation.db_helper import save_job, job_exists
-from scrapers._shared import negative_keyword_match, make_session, extract_seniority
+from scrapers._shared import negative_keyword_match, make_session, extract_seniority, strip_html
 
 HEADERS = {
     'User-Agent': 'SearchingEng-ITJobsScraper/1.0',
@@ -51,16 +51,6 @@ session = make_session(retries=3, headers=HEADERS)
 # workModel mapping observed on ITJobs (best-effort labels for observacoes)
 _WORK_MODEL_LABELS = {1: "Presencial", 2: "Remoto", 3: "Híbrido"}
 
-
-def _strip_html(html: str) -> str:
-    if not html:
-        return ''
-    text = re.sub(r'<br\s*/?>', '\n', html, flags=re.I)
-    text = re.sub(r'</(p|li|h\d|div|tr)\s*>', '\n', text, flags=re.I)
-    text = re.sub(r'<li[^>]*>', '• ', text, flags=re.I)
-    text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'\n{3,}', '\n\n', text).strip()
-    return text
 
 
 def _format_salary(smin, smax) -> str:
@@ -103,7 +93,7 @@ def _normalize_job(raw: dict, fallback_query: str) -> dict:
 
     salario = _format_salary(raw.get('salaryMin'), raw.get('salaryMax'))
 
-    descricao = _strip_html(raw.get('body') or '')
+    descricao = strip_html(raw.get('body') or '')
 
     data_pub = raw.get('publishedAt') or 'Recent'
 
@@ -229,6 +219,7 @@ def iniciar_scraper_itjobs():
 
             # --- Pass 1: filter ---
             to_save = []
+            already_in_db = 0
             for raw in results:
                 job = _normalize_job(raw, fallback_query=q)
                 if not job['titulo'] or not job['link']:
@@ -243,8 +234,15 @@ def iniciar_scraper_itjobs():
                 if NEGATIVE_COMPANIES and any(nc in job['empresa'].lower() for nc in NEGATIVE_COMPANIES):
                     continue
                 if job_exists(job['link']):
+                    already_in_db += 1
                     continue
                 to_save.append(job)
+
+            # If the whole page passed keyword filters but everything was already
+            # in the DB, older pages will also be fully known — stop early.
+            if not to_save and already_in_db > 0 and page > 1:
+                print(f"  → Page {page}: all {already_in_db} matching jobs already in DB. Stopping pagination.")
+                break
 
             # --- Pass 2: batch location fetch (≤5 parallel calls) ---
             jobs_with_id = [j for j in to_save if j['id_externo']]

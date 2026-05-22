@@ -130,6 +130,41 @@ def extract_salary_from_text(text: str) -> str:
     return m.group(0).strip() if m else ''
 
 
+def get_chrome_major_version() -> Optional[int]:
+    """Returns installed Chrome major version.
+
+    Reads CHROME_VERSION env var (set by orchestrator at startup) to avoid a
+    subprocess call on every scraper. Falls back to subprocess detection.
+    """
+    import subprocess as _sp
+    cached = __import__('os').environ.get('CHROME_VERSION', '')
+    if cached:
+        try:
+            return int(cached)
+        except ValueError:
+            pass
+    try:
+        r = _sp.run(['google-chrome', '--version'], capture_output=True, text=True, timeout=5)
+        m = re.search(r'(\d+)\.', r.stdout)
+        if m:
+            return int(m.group(1))
+    except Exception:
+        pass
+    return None
+
+
+def strip_html(html: str) -> str:
+    """Convert HTML to clean plain text — preserves list items and paragraphs as newlines."""
+    if not html:
+        return ''
+    text = re.sub(r'<br\s*/?>', '\n', html, flags=re.I)
+    text = re.sub(r'</(p|li|h\d|div|tr)\s*>', '\n', text, flags=re.I)
+    text = re.sub(r'<li[^>]*>', '• ', text, flags=re.I)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+    return text
+
+
 def init_chrome_with_timeout(options, *, headless: bool = True, version_main=None, timeout_s: int = 90):
     """Initialize an undetected Chrome driver with a hard timeout.
 

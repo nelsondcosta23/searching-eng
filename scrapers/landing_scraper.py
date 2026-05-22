@@ -30,7 +30,7 @@ except ImportError as _e:
     __import__('sys').exit(1)
 
 from automation.db_helper import save_job, job_exists
-from scrapers._shared import negative_keyword_match, make_session, extract_seniority
+from scrapers._shared import negative_keyword_match, make_session, extract_seniority, strip_html
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -43,16 +43,6 @@ session = make_session(retries=3, headers=HEADERS)
 # Cache company names for the duration of the run (avoids N+1 HTTP calls)
 _company_cache: dict[int, str] = {}
 
-
-def _strip_html(html: str) -> str:
-    if not html:
-        return ''
-    text = re.sub(r'<br\s*/?>', '\n', html, flags=re.I)
-    text = re.sub(r'</(p|li|h\d|div|tr)\s*>', '\n', text, flags=re.I)
-    text = re.sub(r'<li[^>]*>', '• ', text, flags=re.I)
-    text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'\n{3,}', '\n\n', text).strip()
-    return text
 
 
 def _get_company_name(company_id: int) -> str:
@@ -90,11 +80,11 @@ def _normalize_job(raw: dict) -> dict:
 
     desc_parts = []
     if raw.get('role_description'):
-        desc_parts.append(_strip_html(raw['role_description']))
+        desc_parts.append(strip_html(raw['role_description']))
     if raw.get('main_requirements'):
-        desc_parts.append("Requisitos:\n" + _strip_html(raw['main_requirements']))
+        desc_parts.append("Requisitos:\n" + strip_html(raw['main_requirements']))
     if raw.get('nice_to_have'):
-        desc_parts.append("Nice to have:\n" + _strip_html(raw['nice_to_have']))
+        desc_parts.append("Nice to have:\n" + strip_html(raw['nice_to_have']))
     descricao = '\n\n'.join(desc_parts)
 
     tags = raw.get('tags') or []
@@ -143,18 +133,26 @@ def iniciar_scraper_landing():
         print("  ⚠ No keywords configured. Skipping.")
         return
 
-    # landing.jobs API search is full-text, not title-only — results for "cto"
-    # include "Backend Developer" because the description mentions the CTO.
-    # Strategy: fetch recent PT/remote jobs without keyword search, let the
-    # TF-IDF scorer assign relevance (0-100). Only negative keywords filter here.
+    # Landing.jobs API supports ?q= full-text search, but it matches descriptions
+    # too — "cto" returns Backend Developers because their desc mentions the CTO.
+    # Strategy: use the shortest profile keyword as a lightweight pre-filter to
+    # halve the volume fetched, then apply strict title + broad-term checks below.
+    # Falls back to no-keyword fetch if KEYWORDS is empty.
+    search_query = min(KEYWORDS, key=len) if KEYWORDS else ''
+    if search_query:
+        print(f"  Using API query: '{search_query}' (shortest role keyword)")
+
     vagas_inseridas = 0
 
     for page in range(1, LANDING_MAX_PAGES + 1):
         time.sleep(random.uniform(0.5, 1.0))
+        params: dict = {'page': page, 'sort': 'published_at'}
+        if search_query:
+            params['q'] = search_query
         try:
             r = session.get(
                 f"{API_BASE}/jobs",
-                params={'page': page, 'sort': 'published_at'},
+                params=params,
                 headers=HEADERS,
                 timeout=15,
             )
