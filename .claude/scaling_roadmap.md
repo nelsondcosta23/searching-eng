@@ -36,14 +36,25 @@ External Software  →  [PocketBase :8090]  ←  Streamlit Dashboard
 
 | # | Task | File | Status |
 |---|---|---|---|
-| TQ-1 | Add Redis service to docker-compose.yml | docker-compose.yml | 🔲 |
-| TQ-2 | Add Celery worker service to docker-compose.yml | docker-compose.yml | 🔲 |
-| TQ-3 | Add `celery`, `redis` to requirements.txt | requirements.txt | 🔲 |
-| TQ-4 | Create `automation/celery_app.py` — Celery app config + rate limiting per platform | automation/celery_app.py | 🔲 |
-| TQ-5 | Create `automation/tasks.py` — `scrape_user_task(user_id)` Celery task wrapping current `run_for_user()` | automation/tasks.py | 🔲 |
-| TQ-6 | Modify `orchestrator.py` — replace sequential user loop with `scrape_user_task.delay(uid)` dispatch | automation/orchestrator.py | 🔲 |
-| TQ-7 | Add platform-level rate limiting via Celery chord/semaphore — max N concurrent LinkedIn workers | automation/celery_app.py | 🔲 |
-| TQ-8 | Add Flower (Celery monitoring UI) to docker-compose | docker-compose.yml | 🔲 |
+| TQ-1 | Add Redis service to docker-compose.yml | docker-compose.yml | ✅ |
+| TQ-2 | Add Celery worker services to docker-compose.yml (selenium + api workers) | docker-compose.yml | ✅ |
+| TQ-3 | Add `celery`, `redis`, `flower` to requirements.txt | requirements.txt | ✅ |
+| TQ-4 | Create `automation/celery_app.py` — Celery app config + rate limiting per platform | automation/celery_app.py | ✅ |
+| TQ-5 | Create `automation/tasks.py` — `scrape_user_task`, `dispatch_all_users`, `run_global_post_processing` | automation/tasks.py | ✅ |
+| TQ-6 | Modify `orchestrator.py` — auto-detect Redis, dispatch tasks when available, sequential fallback | automation/orchestrator.py | ✅ |
+| TQ-7 | Platform-level rate limits in celery_app.py (LinkedIn/Indeed 3/min, Sapo 5/min) | automation/celery_app.py | ✅ |
+| TQ-8 | Flower monitoring UI on :5555 in docker-compose (profile: celery) | docker-compose.yml | ✅ |
+
+**To activate Celery mode:**
+```bash
+# Add to .env:
+REDIS_URL=redis://redis:6379/0
+
+# Start Redis + workers + Flower:
+docker-compose --profile celery up -d redis celery_selenium celery_api flower
+
+# Monitor at http://localhost:5555
+```
 
 ---
 
