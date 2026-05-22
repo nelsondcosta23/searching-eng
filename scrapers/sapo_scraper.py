@@ -105,7 +105,7 @@ def extrair_detalhes_sapo(driver, link_completo):
                             print(f"    🌟 5-Star JSON-LD extraction successful.")
                             break
                 if desc_found: break
-            except:
+            except Exception:
                 continue
 
         # Strategy 2: Look for specific content containers (Fallback)
@@ -157,7 +157,10 @@ def processar_pesquisa(pesquisa_nome, url_pesquisa, driver, total_novas_global):
             print(f"  → Vue component not found for {pesquisa_nome}. Skipping.")
             return 0
 
-        raw_offers_json = vue_component_tag.get(':offers')
+        # Vue shorthand `:offers` is equivalent to `v-bind:offers` in the HTML output.
+        # Try both in case Sapo changes how they render the attribute.
+        raw_offers_json = (vue_component_tag.get(':offers') or
+                           vue_component_tag.get('v-bind:offers'))
         if not raw_offers_json:
             print(f"  → No offers JSON found for {pesquisa_nome}. Skipping.")
             return 0

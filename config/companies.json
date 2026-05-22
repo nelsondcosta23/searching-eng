@@ -658,7 +658,9 @@
     "greenhouse_location_filter": "emea|worldwide",
     "category": "remote",
     "city": null,
-    "remote_company": true
+    "remote_company": true,
+    "is_active": false,
+    "_note": "Blocked via negative_companies filter — deactivated to avoid 100+ wasted API calls per run"
   },
   {
     "name": "GitLab",
@@ -713,7 +715,9 @@
     "greenhouse_location_filter": "portugal",
     "category": "remote",
     "city": null,
-    "remote_company": true
+    "remote_company": true,
+    "is_active": false,
+    "_note": "Duplicate of Wellhub — same greenhouse_board 'gympass'. Wellhub is the current brand name."
   },
   {
     "name": "PandaDoc",

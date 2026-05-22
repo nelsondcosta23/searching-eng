@@ -157,10 +157,45 @@ def _configurar_driver():
     return driver
 
 
-def _extrair_detalhes_requests(link: str) -> dict:
+def _parse_linkedin_soup(soup: BeautifulSoup) -> dict:
+    """Extract job details from a LinkedIn job page HTML (works for both HTTP and Selenium sources).
+
+    Centralises the CSS selector logic so changes only need to be made in one place.
     """
-    Try to fetch the job description via plain HTTP request first (faster).
-    LinkedIn job detail pages are often fully server-rendered.
+    detalhes: dict = {'descricao_completa': '', 'observacoes': '',
+                      'salario': '', 'tipo_contrato': '', 'nivel_experiencia': ''}
+
+    desc_tag = (soup.find(class_='show-more-less-html__markup') or
+                soup.find('div', {'class': re.compile(r'description__text')}) or
+                soup.find(class_='description'))
+    if desc_tag:
+        detalhes['descricao_completa'] = desc_tag.get_text(separator='\n').strip()
+
+    obs_list = []
+    for item in soup.find_all(class_='description__job-criteria-item'):
+        hdr = item.find('h3', class_='description__job-criteria-subheader')
+        val = item.find('span', class_='description__job-criteria-text')
+        if hdr and val:
+            hdr_text, val_text = hdr.get_text().strip(), val.get_text().strip()
+            obs_list.append(f"{hdr_text}: {val_text}")
+            hl = hdr_text.lower()
+            if 'seniority' in hl or 'nível' in hl:
+                detalhes['nivel_experiencia'] = val_text
+            elif 'employment' in hl or 'tipo' in hl:
+                detalhes['tipo_contrato'] = val_text
+    if obs_list:
+        detalhes['observacoes'] = " | ".join(obs_list)
+
+    return detalhes
+
+
+def _extrair_detalhes_requests(link: str) -> dict:
+    """Try to fetch job details via plain HTTP (no Selenium cost).
+
+    LinkedIn's public job pages are partially server-rendered — metadata chips
+    (seniority, employment type) are usually present, but the full description
+    often requires JS execution. If description is empty the caller falls back
+    to Selenium.
     """
     detalhes = {'descricao_completa': '', 'recrutador_nome': '', 'recrutador_link': '',
                  'observacoes': '', 'salario': '', 'tipo_contrato': '', 'nivel_experiencia': ''}
@@ -169,33 +204,8 @@ def _extrair_detalhes_requests(link: str) -> dict:
         resp = requests.get(link, headers={'User-Agent': ua, 'Accept-Language': 'pt-PT,pt;q=0.9'}, timeout=12)
         if resp.status_code != 200:
             return detalhes
-
-        soup = BeautifulSoup(resp.text, 'html.parser')
-
-        desc_tag = (soup.find(class_='show-more-less-html__markup') or
-                    soup.find('div', {'class': re.compile(r'description__text')}) or
-                    soup.find(class_='description'))
-        if desc_tag:
-            detalhes['descricao_completa'] = desc_tag.get_text(separator='\n').strip()
-
-        obs_list = []
-        criteria = soup.find_all(class_='description__job-criteria-item')
-        for item in criteria:
-            hdr = item.find('h3', class_='description__job-criteria-subheader')
-            val = item.find('span', class_='description__job-criteria-text')
-            if hdr and val:
-                hdr_text = hdr.get_text().strip()
-                val_text = val.get_text().strip()
-                obs_list.append(f"{hdr_text}: {val_text}")
-                hl = hdr_text.lower()
-                if 'seniority' in hl or 'nível' in hl:
-                    detalhes['nivel_experiencia'] = val_text
-                elif 'employment' in hl or 'tipo' in hl:
-                    detalhes['tipo_contrato'] = val_text
-
-        if obs_list:
-            detalhes['observacoes'] = " | ".join(obs_list)
-
+        parsed = _parse_linkedin_soup(BeautifulSoup(resp.text, 'html.parser'))
+        detalhes.update(parsed)
     except Exception:
         pass  # Will fall back to Selenium
     return detalhes
@@ -211,35 +221,16 @@ def _extrair_detalhes_selenium(driver, link: str, titulo: str) -> dict:
         time.sleep(1.5 + random.uniform(0.5, 1.5))
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
+        parsed = _parse_linkedin_soup(soup)
+        detalhes.update(parsed)
 
-        desc_tag = (soup.find(class_='show-more-less-html__markup') or
-                    soup.find('div', {'class': re.compile(r'description__text')}) or
-                    soup.find(class_='description'))
-        if desc_tag:
-            detalhes['descricao_completa'] = desc_tag.get_text(separator='\n').strip()
-
+        # Recruiter info only available via Selenium (not in public HTTP response)
         rec_tag = soup.find(class_='message-the-recruiter__name') or soup.find('h3', class_='base-main-card__title')
         if rec_tag:
             detalhes['recrutador_nome'] = rec_tag.get_text().strip()
-
         rec_link = soup.find('a', class_='base-main-card__info')
         if rec_link:
             detalhes['recrutador_link'] = rec_link.get('href', '').split('?')[0]
-
-        obs_list = []
-        for item in soup.find_all(class_='description__job-criteria-item'):
-            hdr = item.find('h3', class_='description__job-criteria-subheader')
-            val = item.find('span', class_='description__job-criteria-text')
-            if hdr and val:
-                hdr_text, val_text = hdr.get_text().strip(), val.get_text().strip()
-                obs_list.append(f"{hdr_text}: {val_text}")
-                hl = hdr_text.lower()
-                if 'seniority' in hl or 'nível' in hl:
-                    detalhes['nivel_experiencia'] = val_text
-                elif 'employment' in hl or 'tipo' in hl:
-                    detalhes['tipo_contrato'] = val_text
-        if obs_list:
-            detalhes['observacoes'] = " | ".join(obs_list)
 
     except Exception as e:
         print(f"  [Selenium Deep] Error for '{titulo}': {e}")
@@ -344,11 +335,16 @@ def processar_uma_pesquisa(cat_nome: str, url_info: dict, driver, vagas_ja_inser
             if job_exists(job['link'], titulo=titulo_raw, empresa=empresa_raw, user_id=USER_ID):
                 continue
 
-            # Session-level dedup as fast short-circuit (avoids DB call for same-run dupes)
-            dedup_key = (titulo_raw.strip().lower(), empresa_raw.strip().lower())
-            if dedup_key in seen_jobs:
-                continue
-            seen_jobs.add(dedup_key)
+            # Session-level dedup: only track when empresa is known — "Not specified"
+            # from listing cards is not reliable enough to dedup on, and would
+            # cause a second search to skip the same job when one listing had the
+            # company and the other didn't.
+            empresa_norm = empresa_raw.strip().lower()
+            if empresa_norm and empresa_norm != 'not specified':
+                dedup_key = (titulo_raw.strip().lower(), empresa_norm)
+                if dedup_key in seen_jobs:
+                    continue
+                seen_jobs.add(dedup_key)
 
             # Apply keyword filters BEFORE deep extraction to save Selenium budget.
             titulo  = job.get('titulo', '') or ''

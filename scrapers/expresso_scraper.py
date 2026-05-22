@@ -24,6 +24,7 @@ from urllib.parse import quote as _url_quote
 PLATAFORMA = "Expresso Jobs"
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))
+EXPRESSO_MAX_PAGES = int(os.environ.get('EXPRESSO_MAX_PAGES', '5'))
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
@@ -47,9 +48,9 @@ from bs4 import BeautifulSoup
 
 BASE_URL = "https://expressoemprego.pt"
 
-# /emprego/{slug}/{city}/{id}  — the job detail URL pattern.
-# slug may or may not contain a hyphen (e.g. /emprego/cto/porto/12345 is valid).
-_JOB_HREF_RE = re.compile(r'^/emprego/[^/]+/[^/]+/(\d+)$')
+# /emprego/{...}/{id}  — matches any depth of path segments ending with a numeric ID.
+# Handles /emprego/slug/city/12345 AND /emprego/category/slug/city/12345.
+_JOB_HREF_RE = re.compile(r'^/emprego/(?:[^/]+/)+(\d+)$')
 
 
 def _configurar_driver() -> uc.Chrome:
@@ -209,62 +210,85 @@ def iniciar_scraper_expresso():
         except Exception as e:
             print(f"  [Expresso] Homepage warm-up warning: {e}")
 
+        seen_links: set = set()  # session-level dedup across all queries + pages
+
         for q in queries:
             print(f"\n[Expresso] Search: {q}")
-            try:
-                # Navigate directly to the search results URL
-                search_url = f"{BASE_URL}/pesquisa?K={_url_quote(q)}"
-                driver.get(search_url)
-                time.sleep(random.uniform(4.0, 6.0))
 
-                print(f"  URL: {driver.current_url}")
-                soup = BeautifulSoup(driver.page_source, 'html.parser')
-                job_list = _extract_job_links(soup)
-                print(f"  → {len(job_list)} job links found")
+            for page in range(1, EXPRESSO_MAX_PAGES + 1):
+                try:
+                    # Expresso uses &page=N for pagination (ASP.NET standard)
+                    search_url = (f"{BASE_URL}/pesquisa?K={_url_quote(q)}"
+                                  if page == 1 else
+                                  f"{BASE_URL}/pesquisa?K={_url_quote(q)}&page={page}")
+                    driver.get(search_url)
+                    time.sleep(random.uniform(3.5, 5.5))
 
-                for job in job_list:
-                    titulo = job['titulo']
-                    link   = job['link']
+                    print(f"  [page {page}] URL: {driver.current_url}")
+                    soup = BeautifulSoup(driver.page_source, 'html.parser')
+                    job_list = _extract_job_links(soup)
+                    print(f"  → {len(job_list)} job links found on page {page}")
 
-                    if not titulo or len(titulo) < 5:
-                        continue
-                    if not strict_keyword_match(titulo.lower(), KEYWORDS):
-                        continue
-                    if negative_keyword_match(titulo.lower(), NEGATIVE_KEYWORDS):
-                        continue
-                    if job_exists(link):
-                        continue
-                    print(f"  [NEW] {titulo} | {job['localizacao']}")
-                    detail = _extract_detail(driver, link)
+                    if not job_list:
+                        break  # no more results
 
-                    if NEGATIVE_COMPANIES and any(nc in (detail['empresa'] or '').lower() for nc in NEGATIVE_COMPANIES):
-                        continue
+                    new_on_page = 0
+                    for job in job_list:
+                        titulo = job['titulo']
+                        link   = job['link']
 
-                    ok = save_job(
-                        user_id=USER_ID,
-                        plataforma=PLATAFORMA,
-                        id_externo=job['id_externo'],
-                        titulo=titulo,
-                        empresa=detail['empresa'],
-                        localizacao=job['localizacao'],
-                        link=link,
-                        data_pub='Recent',
-                        categoria=q,
-                        descricao_completa=detail['descricao_completa'],
-                        observacoes=detail['observacoes'],
-                        salario=detail['salario'] or None,
-                        tipo_contrato=detail['tipo_contrato'] or None,
-                        nivel_experiencia=extract_seniority(titulo, detail['descricao_completa']) or None,
-                    )
-                    if ok:
-                        total_saved += 1
-                        print(f"    ✅ Saved")
+                        if not titulo or len(titulo) < 5:
+                            continue
+                        if link in seen_links:
+                            continue
+                        seen_links.add(link)
+                        if not strict_keyword_match(titulo.lower(), KEYWORDS):
+                            continue
+                        if negative_keyword_match(titulo.lower(), NEGATIVE_KEYWORDS):
+                            continue
+                        if job_exists(link):
+                            continue
+                        print(f"  [NEW] {titulo} | {job['localizacao']}")
+                        detail = _extract_detail(driver, link)
 
-                    if MAX_JOBS > 0 and total_saved >= MAX_JOBS:
+                        if NEGATIVE_COMPANIES and any(nc in (detail['empresa'] or '').lower() for nc in NEGATIVE_COMPANIES):
+                            continue
+
+                        ok = save_job(
+                            user_id=USER_ID,
+                            plataforma=PLATAFORMA,
+                            id_externo=job['id_externo'],
+                            titulo=titulo,
+                            empresa=detail['empresa'],
+                            localizacao=job['localizacao'],
+                            link=link,
+                            data_pub='Recent',
+                            categoria=q,
+                            descricao_completa=detail['descricao_completa'],
+                            observacoes=detail['observacoes'],
+                            salario=detail['salario'] or None,
+                            tipo_contrato=detail['tipo_contrato'] or None,
+                            nivel_experiencia=extract_seniority(titulo, detail['descricao_completa']) or None,
+                        )
+                        if ok:
+                            total_saved += 1
+                            new_on_page += 1
+                            print(f"    ✅ Saved")
+
+                        if MAX_JOBS > 0 and total_saved >= MAX_JOBS:
+                            break
+
+                    # If every job on this page was already in DB, stop paginating
+                    if new_on_page == 0 and page > 1:
+                        print(f"  → No new jobs on page {page}. Stopping pagination.")
                         break
 
-            except Exception as e:
-                print(f"  [Expresso] Error on query '{q}': {e}")
+                except Exception as e:
+                    print(f"  [Expresso] Error on query '{q}' page {page}: {e}")
+                    break
+
+                if MAX_JOBS > 0 and total_saved >= MAX_JOBS:
+                    break
 
             if MAX_JOBS > 0 and total_saved >= MAX_JOBS:
                 print(f"  [LIMIT] Max {MAX_JOBS} jobs reached.")

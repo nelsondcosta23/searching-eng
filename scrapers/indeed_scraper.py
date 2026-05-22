@@ -188,7 +188,7 @@ def processar_uma_pesquisa(driver, categoria_nome, url_info, vagas_ja_inseridas=
                     WebDriverWait(driver, 10).until(EC.presence_of_element_located((strategy, selector)))
                     cards_found = True
                     break
-                except:
+                except Exception:
                     continue
 
             if not cards_found:
@@ -245,7 +245,12 @@ def processar_uma_pesquisa(driver, categoria_nome, url_info, vagas_ja_inseridas=
                         localizacao = localizacao_tag.get_text().strip()
 
                     data_pub = "Recent"
-                    data_pub_tag = vaga.find(class_='date')
+                    # Try multiple selectors — Indeed migrates class names frequently
+                    data_pub_tag = (
+                        vaga.find(attrs={'data-testid': 'myJobsStateDate'}) or
+                        vaga.find(class_='date') or
+                        vaga.find('span', class_=re.compile(r'date|posted', re.I))
+                    )
                     if data_pub_tag:
                         data_pub = data_pub_tag.get_text().replace('Posted', '').strip()
 
@@ -297,6 +302,13 @@ def processar_uma_pesquisa(driver, categoria_nome, url_info, vagas_ja_inseridas=
             except Exception:
                 pass
             driver = configurar_driver()
+            # Re-warm after restart — fresh driver has no cookies, hitting Indeed
+            # immediately after restart triggers bot detection on the next search.
+            try:
+                driver.get("https://pt.indeed.com/")
+                time.sleep(random.uniform(3.0, 5.0))
+            except Exception:
+                pass
             break
 
     print(f"  → Finished '{categoria_nome}': {novas_vagas_cont} new jobs indexed.")

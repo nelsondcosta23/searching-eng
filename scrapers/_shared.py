@@ -196,8 +196,11 @@ def init_chrome_with_timeout(options, *, headless: bool = True, version_main=Non
         driver = uc.Chrome(**kwargs)
         return driver
     except OSError as exc:
-        print(f"  ❌ {exc}. Aborting scraper.", file=sys.stderr)
-        sys.exit(1)
+        # Raise RuntimeError so callers' `except Exception` blocks can catch it
+        # and implement fallback logic (e.g. HTTP-only mode in Sapo scraper).
+        # Previously called sys.exit(1) which raises SystemExit(BaseException),
+        # bypassing all `except Exception` handlers in the call stack.
+        raise RuntimeError(f"Chrome driver init failed: {exc}") from exc
     finally:
         if hasattr(signal, "SIGALRM"):
             signal.alarm(0)

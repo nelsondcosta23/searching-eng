@@ -167,6 +167,9 @@ def _strategy_lever(company: dict) -> list[dict]:
         return []
 
     if not isinstance(data, list):
+        # API sometimes returns an error dict instead of a list
+        if isinstance(data, dict) and data.get('error'):
+            print(f"    [Lever:{board}] API error: {data['error']}")
         return []
 
     loc_filter = _resolve_filter(company, 'lever_location_filter')
@@ -235,7 +238,7 @@ def _strategy_ashby(company: dict) -> list[dict]:
     loc_filter = _resolve_filter(company, 'ashby_location_filter')
     out = []
     for raw in data.get('jobs', []):
-        if raw.get('isListed') is False:
+        if not raw.get('isListed', True):
             continue
 
         loc = raw.get('location', '') or ''

@@ -13,6 +13,7 @@ import re
 import sys
 import time
 import random
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 PLATAFORMA = "ITJobs"
@@ -151,11 +152,15 @@ def _fetch_location(job_id: int) -> str:
 
 
 def _fetch_page(query: str, page: int, work_model: int = 0) -> dict:
+    # Limit to jobs published in the last 7 days. Reduces response size and
+    # avoids burning pages on content already in the DB from previous runs.
+    since = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
     params = {
         'api_key': ITJOBS_API_KEY,
         'q': query,
         'limit': ITJOBS_PAGE_LIMIT,
         'page': page,
+        'publishedAt.from': since,
     }
     if work_model:
         params['workModel'] = work_model
@@ -255,7 +260,9 @@ def iniciar_scraper_itjobs():
                     for future in as_completed(futures):
                         job = futures[future]
                         try:
-                            city = future.result(timeout=8)
+                            # timeout=12 > request timeout=10 so the request always
+                            # resolves before the future times out (avoids thread leaks)
+                            city = future.result(timeout=12)
                         except Exception:
                             city = ''
                         if city:
@@ -278,7 +285,7 @@ def iniciar_scraper_itjobs():
                     localizacao=job['localizacao'],
                     link=job['link'],
                     data_pub=job['data_pub'],
-                    categoria='IT',
+                    categoria=q,
                     descricao_completa=job['descricao_completa'],
                     observacoes=job['observacoes'],
                     salario=job['salario'],

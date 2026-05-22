@@ -396,14 +396,11 @@ def run_for_user(user_id: str, job_profile: str = 'generalist') -> dict:
 
     # ── Scorer + Enrichment per user ─────────────────────────────────────────
     print(f"\n{'#'*55}")
-    print(f'# SCORING — user {uid_short}')
+    print(f'# SCORING + ENRICHMENT — user {uid_short}')
     print(f"{'#'*55}")
+    # job_scorer.py (no args) runs score_and_update_unscored_jobs() then
+    # backfill_enrichment() internally — no need for a separate --backfill call.
     _run_phase('Scorer', os.path.join(BASE_DIR, 'automation', 'job_scorer.py'))
-
-    print(f"\n{'#'*55}")
-    print(f'# ENRICHMENT — user {uid_short}')
-    print(f"{'#'*55}")
-    _run_phase('Enrichment', os.path.join(BASE_DIR, 'automation', 'job_scorer.py'), ['--backfill'])
 
     _check_zero_yield(all_results, user_id, run_start)
 
