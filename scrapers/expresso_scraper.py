@@ -19,6 +19,7 @@ import random
 import json
 import shutil
 import tempfile
+from urllib.parse import quote as _url_quote
 
 PLATAFORMA = "Expresso Jobs"
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
@@ -39,16 +40,16 @@ from automation.db_helper import save_job, job_exists
 from scrapers._shared import negative_keyword_match, extract_seniority, init_chrome_with_timeout
 
 import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://expressoemprego.pt"
 
-# /emprego/{slug}/{city}/{id}  — the job detail URL pattern
-_JOB_HREF_RE = re.compile(r'^/emprego/[^/]+-[^/]+/[^/]+/(\d+)$')
+# /emprego/{slug}/{city}/{id}  — the job detail URL pattern.
+# slug may or may not contain a hyphen (e.g. /emprego/cto/porto/12345 is valid).
+_JOB_HREF_RE = re.compile(r'^/emprego/[^/]+/[^/]+/(\d+)$')
 
 
 def get_chrome_major_version():
@@ -215,22 +216,24 @@ def iniciar_scraper_expresso():
                 seen_q.add(clean)
                 queries.append(clean)
 
+        # Warm-up: visit homepage once to set ASP.NET session cookies / bypass WAF.
+        # All subsequent searches use the direct /pesquisa?K= URL so we don't
+        # depend on the brittle ASP.NET WebForms form element ID (txtPesquisa),
+        # which has caused 0-result runs when the DOM changed.
+        print("  [Expresso] Warming up homepage for session cookies...")
+        try:
+            driver.get(BASE_URL + '/')
+            time.sleep(random.uniform(3.0, 5.0))
+        except Exception as e:
+            print(f"  [Expresso] Homepage warm-up warning: {e}")
+
         for q in queries:
             print(f"\n[Expresso] Search: {q}")
             try:
-                # Step 1: homepage — sets ASP.NET session cookies
-                driver.get(BASE_URL + '/')
-                time.sleep(random.uniform(3.0, 5.0))
-
-                # Step 2: submit the search form
-                search_box = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.ID, 'txtPesquisa'))
-                )
-                search_box.clear()
-                search_box.send_keys(q)
-                time.sleep(random.uniform(0.5, 1.0))
-                search_box.send_keys(Keys.RETURN)
-                time.sleep(random.uniform(5.0, 7.0))
+                # Navigate directly to the search results URL
+                search_url = f"{BASE_URL}/pesquisa?K={_url_quote(q)}"
+                driver.get(search_url)
+                time.sleep(random.uniform(4.0, 6.0))
 
                 print(f"  URL: {driver.current_url}")
                 soup = BeautifulSoup(driver.page_source, 'html.parser')

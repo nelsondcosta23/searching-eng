@@ -29,6 +29,11 @@ def negative_keyword_match(text: str, negatives: Iterable[str]) -> Optional[str]
     Uses ``\\b`` so 'intern' does NOT match 'international', 'manager' does NOT
     match 'managers', etc. Compare to the previous inline behaviour
     `nkw in text` which produced false positives.
+
+    Keywords that start with a non-word character (e.g. '.net') use
+    lookahead/lookbehind instead of \\b, since \\b does not anchor against
+    punctuation. This allows '.net' to match '(.NET)' and 'Tech Lead .NET'
+    without false-positives on 'internet'.
     """
     if not text or not negatives:
         return None
@@ -37,7 +42,13 @@ def negative_keyword_match(text: str, negatives: Iterable[str]) -> Optional[str]
         kw_clean = (kw or '').strip().lower()
         if not kw_clean:
             continue
-        if re.search(r'\b' + re.escape(kw_clean) + r'\b', text_lower):
+        # \b only works between word/non-word transitions. For keywords starting
+        # with punctuation (e.g. '.net'), use lookahead/behind instead.
+        if kw_clean[0].isalnum() or kw_clean[0] == '_':
+            pattern = r'\b' + re.escape(kw_clean) + r'\b'
+        else:
+            pattern = r'(?<!\w)' + re.escape(kw_clean) + r'(?!\w)'
+        if re.search(pattern, text_lower):
             return kw_clean
     return None
 
