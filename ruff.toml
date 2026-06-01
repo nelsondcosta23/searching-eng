@@ -1,0 +1,28 @@
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "I",    # isort
+]
+ignore = [
+    "E501",  # line too long — SQL and long strings are intentional
+    "E741",  # ambiguous variable names — 'e' for exceptions is fine
+    "B008",  # do not perform function call in default argument — FastAPI pattern
+    "B904",  # exception chaining — not enforced for compatibility
+    "UP007", # use X | Y for union — requires type: ignore in older call sites
+]
+
+[lint.per-file-ignores]
+"tests/**/*.py" = ["B", "E711"]   # test files can use assert == None etc.
+"init_db.py"    = ["E"]           # legacy script with print-heavy style
+"migration_v7.py" = ["E", "B"]
+
+[format]
+quote-style = "single"
+indent-style = "space"

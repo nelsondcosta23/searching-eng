@@ -123,6 +123,36 @@ def _is_pt_or_remote(job: dict) -> bool:
     return any(cc.upper() == 'PT' for cc in job['country_codes'])
 
 
+def _fetch_keyword_jobs(keyword: str) -> dict[str, dict]:
+    """Fetches all pages for a single keyword query. Returns {link: raw_job}."""
+    collected: dict[str, dict] = {}
+    for page in range(1, LANDING_MAX_PAGES + 1):
+        time.sleep(random.uniform(0.4, 0.9))
+        try:
+            r = session.get(
+                f"{API_BASE}/jobs",
+                params={'page': page, 'sort': 'published_at', 'q': keyword},
+                headers=HEADERS,
+                timeout=15,
+            )
+            if r.status_code != 200:
+                print(f"    [Landing] HTTP {r.status_code} — stopping keyword '{keyword}'")
+                break
+            results = r.json()
+            if not isinstance(results, list) or not results:
+                break
+            for raw in results:
+                link = raw.get('url') or ''
+                if link and link not in collected:
+                    collected[link] = raw
+            if len(results) < 50:
+                break
+        except Exception as e:
+            print(f"    [Landing] Error page={page} kw='{keyword}': {e}")
+            break
+    return collected
+
+
 def iniciar_scraper_landing():
     print(f"\n{'='*55}")
     print(f"  Starting Scraper: {PLATAFORMA}")
@@ -133,107 +163,68 @@ def iniciar_scraper_landing():
         print("  ⚠ No keywords configured. Skipping.")
         return
 
-    # Landing.jobs API supports ?q= full-text search, but it matches descriptions
-    # too — "cto" returns Backend Developers because their desc mentions the CTO.
-    # Strategy: use the shortest profile keyword as a lightweight pre-filter to
-    # halve the volume fetched, then apply strict title + broad-term checks below.
-    # Falls back to no-keyword fetch if KEYWORDS is empty.
-    search_query = min(KEYWORDS, key=len) if KEYWORDS else ''
-    if search_query:
-        print(f"  Using API query: '{search_query}' (shortest role keyword)")
+    # Multi-query: one API call per keyword so every role gets targeted results.
+    # Previously the scraper used only the shortest keyword ("cto"), which missed
+    # all results for "engineering manager", "tech lead", etc.
+    all_raws: dict[str, dict] = {}
+    for kw in KEYWORDS:
+        print(f"  → Querying: '{kw}'")
+        fetched = _fetch_keyword_jobs(kw)
+        new_links = len(fetched) - len(set(fetched) & set(all_raws))
+        all_raws.update(fetched)
+        print(f"    {len(fetched)} jobs fetched, {new_links} unique new")
+
+    print(f"\n  Total unique jobs across all queries: {len(all_raws)}")
 
     vagas_inseridas = 0
-
-    for page in range(1, LANDING_MAX_PAGES + 1):
-        time.sleep(random.uniform(0.5, 1.0))
-        params: dict = {'page': page, 'sort': 'published_at'}
-        if search_query:
-            params['q'] = search_query
-        try:
-            r = session.get(
-                f"{API_BASE}/jobs",
-                params=params,
-                headers=HEADERS,
-                timeout=15,
-            )
-            if r.status_code != 200:
-                print(f"  [Landing] HTTP {r.status_code} page={page}")
-                break
-            results = r.json()
-            if not isinstance(results, list) or not results:
-                break
-        except Exception as e:
-            print(f"  [Landing] Error page={page}: {e}")
-            break
-
-        page_new = 0
-        for raw in results:
-            job = _normalize_job(raw)
-
-            if not job['titulo'] or not job['link']:
-                continue
-
-            if not _is_pt_or_remote(job):
-                continue
-
-            if negative_keyword_match(job['titulo'].lower(), NEGATIVE_KEYWORDS):
-                continue
-
-            # Relevance pre-filter: accept if EITHER the job title directly matches
-            # a known role keyword OR the combined text has 2+ broad term matches.
-            # Single-term broad match was too loose ("senior" alone passed anything).
-            if BROAD_TERMS:
-                combined_text = f"{job['titulo']} {job['descricao_completa'][:500]}".lower()
-                title_match  = strict_keyword_match(job['titulo'].lower(), KEYWORDS)
-                broad_count  = sum(
-                    1 for t in BROAD_TERMS
-                    if re.search(r'\b' + re.escape(t.lower()) + r'\b', combined_text)
-                )
-                if not (title_match or broad_count >= 2):
-                    continue
-
-            if job_exists(job['link']):
-                continue
-
-            empresa = _get_company_name(job['company_id'])
-
-            if NEGATIVE_COMPANIES and any(nc in empresa.lower() for nc in NEGATIVE_COMPANIES):
-                continue
-
-            print(f"  [NEW] {job['titulo']} @ {empresa} | {job['localizacao']}")
-
-            ok = save_job(
-                user_id=USER_ID,
-                plataforma=PLATAFORMA,
-                id_externo=job['id_externo'],
-                titulo=job['titulo'],
-                empresa=empresa,
-                localizacao=job['localizacao'],
-                link=job['link'],
-                data_pub=job['data_pub'],
-                categoria='Tech',
-                descricao_completa=job['descricao_completa'],
-                observacoes=job['observacoes'],
-                salario=job['salario'] or None,
-                tipo_contrato=job['tipo_contrato'] or None,
-                nivel_experiencia=job['nivel_experiencia'] or None,
-            )
-            if ok:
-                vagas_inseridas += 1
-                page_new += 1
-                print(f"    ✅ Saved ({job['salario'] or 'no salary'})")
-
-            if MAX_JOBS > 0 and vagas_inseridas >= MAX_JOBS:
-                break
-
-        print(f"  → Page {page}: {len(results)} jobs fetched, {page_new} new PT/remote saved.")
-
-        if len(results) < 50:
-            break  # last page
-
+    for link, raw in all_raws.items():
         if MAX_JOBS > 0 and vagas_inseridas >= MAX_JOBS:
             print(f"  [LIMIT REACHED] Max {MAX_JOBS} jobs. Stopping.")
             break
+
+        job = _normalize_job(raw)
+        if not job['titulo'] or not job['link']:
+            continue
+
+        if not _is_pt_or_remote(job):
+            continue
+
+        if negative_keyword_match(job['titulo'].lower(), NEGATIVE_KEYWORDS):
+            continue
+
+        # Title must match at least one role keyword (strict word-boundary match).
+        # We already pre-filtered by keyword via the API query, but the API
+        # matches descriptions too — this guards against false positives.
+        if not strict_keyword_match(job['titulo'].lower(), KEYWORDS):
+            continue
+
+        if job_exists(job['link']):
+            continue
+
+        empresa = _get_company_name(job['company_id'])
+        if NEGATIVE_COMPANIES and any(nc in empresa.lower() for nc in NEGATIVE_COMPANIES):
+            continue
+
+        print(f"  [NEW] {job['titulo']} @ {empresa} | {job['localizacao']}")
+        ok = save_job(
+            user_id=USER_ID,
+            plataforma=PLATAFORMA,
+            id_externo=job['id_externo'],
+            titulo=job['titulo'],
+            empresa=empresa,
+            localizacao=job['localizacao'],
+            link=job['link'],
+            data_pub=job['data_pub'],
+            categoria='Tech',
+            descricao_completa=job['descricao_completa'],
+            observacoes=job['observacoes'],
+            salario=job['salario'] or None,
+            tipo_contrato=job['tipo_contrato'] or None,
+            nivel_experiencia=job['nivel_experiencia'] or None,
+        )
+        if ok:
+            vagas_inseridas += 1
+            print(f"    ✅ Saved ({job['salario'] or 'no salary'})")
 
     print(f"\n{'='*55}")
     print(f"  Landing.jobs Done: {vagas_inseridas} new jobs saved.")

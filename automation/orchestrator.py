@@ -279,6 +279,14 @@ def run_scraper(name: str, filename: str) -> tuple[str, bool, int]:
     jobs_added = _count_global_since(name, t_start)
     log_run(name, jobs_added=jobs_added, success=success, duration_s=duration, notes=notes)
 
+    # C-1: anomaly detection — alert if yield is far below 7-day baseline
+    if success:
+        try:
+            from automation.scraper_health import check_scraper_yield
+            check_scraper_yield(name, jobs_added)
+        except Exception:
+            pass
+
     return name, success, duration
 
 
@@ -481,16 +489,22 @@ def main():
         time.sleep(delay_s)
 
     # ── Mode selection ────────────────────────────────────────────────────────
-    # When Celery/Redis is available, dispatch per-user tasks to the queue.
-    # Each user runs in parallel on a worker process with proper rate limiting.
-    # When Redis is unavailable (single-machine dev setup), fall back to the
-    # original sequential mode — zero config required to run locally.
-    use_celery = not args.direct and _celery_available()
+    # PIPELINE_MODE env var gives ops an explicit override:
+    #   auto   (default) — use Celery when Redis is reachable, else direct
+    #   celery            — force Celery (fails fast if Redis is down)
+    #   cron              — force direct mode (ignores Redis entirely)
+    pipeline_mode = os.environ.get('PIPELINE_MODE', 'auto').lower()
+    if args.direct or pipeline_mode == 'cron':
+        use_celery = False
+    elif pipeline_mode == 'celery':
+        use_celery = True
+    else:
+        use_celery = _celery_available()
 
     if use_celery:
         _run_celery_mode()
     else:
-        if not args.direct:
+        if pipeline_mode == 'auto' and not args.direct:
             print('[orchestrator] Redis not reachable — falling back to direct mode.')
         _run_direct_mode()
 

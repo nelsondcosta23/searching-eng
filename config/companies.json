@@ -6,7 +6,9 @@
     "careers_url": "https://www.cgd.pt/Institucional/Recursos-Humanos/Recrutamento/Pages/Recrutamento.aspx",
     "category": "banco",
     "city": "Lisboa",
-    "job_selector": "a[href*='emprego'], a[href*='recrutamento'], a[href*='job']"
+    "job_selector": "a[href*='emprego'], a[href*='recrutamento'], a[href*='job']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Millennium BCP",
@@ -15,7 +17,9 @@
     "careers_url": "https://www.millenniumbcp.pt/site/conteudo/sobre-o-banco/trabalhar-bcp/",
     "category": "banco",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career'], a[href*='vaga']"
+    "job_selector": "a[href*='job'], a[href*='career'], a[href*='vaga']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Novo Banco",
@@ -24,7 +28,9 @@
     "careers_url": "https://novobanco.pt/site/cms.aspx?labelid=trabnosconosconosconosco",
     "category": "banco",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Santander Portugal",
@@ -33,7 +39,9 @@
     "careers_url": "https://www.santander.pt/sobre-nos/trabalhar-no-santander",
     "category": "banco",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "BNP Paribas Portugal",
@@ -42,7 +50,9 @@
     "careers_url": "https://www.bnpparibas.pt/en/jobs/",
     "category": "banco",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='offer']"
+    "job_selector": "a[href*='job'], a[href*='offer']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "SIBS",
@@ -107,7 +117,9 @@
     "careers_url": "https://www.nos.pt/corporativo/recrutamento/Pages/Homepage.aspx",
     "category": "telco",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career'], a[href*='recrutamento']"
+    "job_selector": "a[href*='job'], a[href*='career'], a[href*='recrutamento']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "MEO / Altice Portugal",
@@ -116,7 +128,9 @@
     "careers_url": "https://www.telecom.pt/en-us/carreiras",
     "category": "telco",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='opportunit']"
+    "job_selector": "a[href*='job'], a[href*='opportunit']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Vodafone Portugal",
@@ -125,7 +139,9 @@
     "careers_url": "https://careers.vodafone.com/search/?q=&locationsearch=Portugal",
     "category": "telco",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Fidelidade",
@@ -134,7 +150,9 @@
     "careers_url": "https://www.fidelidade.pt/PT/grupo/pessoas/Pages/Recrutamento.aspx",
     "category": "seguradora",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='recrutamento']"
+    "job_selector": "a[href*='job'], a[href*='recrutamento']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Ageas Portugal",
@@ -143,7 +161,9 @@
     "careers_url": "https://www.ageas.pt/sobre-nos/pessoas-e-cultura/trabalhe-connosco/",
     "category": "seguradora",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Tranquilidade",
@@ -152,7 +172,9 @@
     "careers_url": "https://www.tranquilidade.pt/sobre-nos/trabalhe-connosco",
     "category": "seguradora",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Zurich Portugal",
@@ -161,7 +183,9 @@
     "careers_url": "https://careers.zurich.com/search/?q=&locationsearch=Portugal",
     "category": "seguradora",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "OutSystems",
@@ -340,7 +364,9 @@
     "careers_url": "https://recrutamento.sonae.pt/",
     "category": "retalho",
     "city": "Porto",
-    "job_selector": "a[href*='/job/']"
+    "job_selector": "a[href*='/job/']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Jerónimo Martins",
@@ -349,7 +375,9 @@
     "careers_url": "https://www.jeronimomartins.com/people/join-us/job-opportunities/",
     "category": "retalho",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "AstraZeneca",
@@ -388,7 +416,9 @@
     "ashby_board": "carbyne",
     "ashby_location_filter": "lisbon|lisboa|portugal|remote",
     "category": "seguranca_publica",
-    "city": "Lisboa"
+    "city": "Lisboa",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "TUI Portugal",
@@ -406,7 +436,9 @@
     "careers_url": "https://www.xpand-it.com/careers/",
     "category": "software",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Worten",
@@ -415,7 +447,9 @@
     "careers_url": "https://www.worten.pt/institucional/trabalhna-worten",
     "category": "retalho",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "WYgroup",
@@ -424,7 +458,9 @@
     "careers_url": "https://www.wygroup.net/careers/",
     "category": "agencia",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Ogilvy Portugal",
@@ -443,7 +479,9 @@
     "careers_url": "https://havas.com/careers/",
     "category": "agencia",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "REN",
@@ -452,7 +490,9 @@
     "careers_url": "https://www.ren.pt/pt-PT/carreiras/emprego/",
     "category": "energia",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='emprego'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='emprego'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Air Liquide / ALEBS",
@@ -461,7 +501,9 @@
     "careers_url": "https://airliquidehr.wd3.myworkdayjobs.com/en-GB/AirLiquideExternalCareer?locationCountry=2e8c5034deb045d49315417c347472ca",
     "category": "industrial_tech",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Intapp",
@@ -470,7 +512,9 @@
     "careers_url": "https://www.intapp.com/careers/",
     "category": "software",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Techem",
@@ -479,7 +523,9 @@
     "careers_url": "https://www.techem.com/en/careers/job-offers/",
     "category": "iot",
     "city": "Porto",
-    "job_selector": "a[href*='job'], a[href*='career'], a[href*='offer']"
+    "job_selector": "a[href*='job'], a[href*='career'], a[href*='offer']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Bounce",
@@ -516,7 +562,9 @@
     "careers_url": "https://emprego.jysk.pt/vagas-pt",
     "category": "retalho",
     "city": "Lisboa",
-    "job_selector": "a[href*='vagas']"
+    "job_selector": "a[href*='vagas']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Foursys Portugal",
@@ -525,7 +573,9 @@
     "careers_url": "https://jobs.rankdone.com/foursys/",
     "category": "software",
     "city": "Lisboa",
-    "job_selector": "a[href*='rankdone.com/foursys']"
+    "job_selector": "a[href*='rankdone.com/foursys']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "FNAC Portugal",
@@ -534,7 +584,9 @@
     "careers_url": "https://recrutamento-mediamarkt.fnac.pt/go/Todas-as-oportunidades/8935955/",
     "category": "retalho",
     "city": "Lisboa",
-    "job_selector": "a[href*='recrutamento.fnac.pt'], a[href*='job'], a[href*='oportunidade']"
+    "job_selector": "a[href*='recrutamento.fnac.pt'], a[href*='job'], a[href*='oportunidade']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "BBDO Portugal",
@@ -543,7 +595,9 @@
     "careers_url": "https://www.bbdo.pt/",
     "category": "agencia",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='career'], a[href*='vaga']"
+    "job_selector": "a[href*='job'], a[href*='career'], a[href*='vaga']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Fullsix Portugal",
@@ -570,7 +624,9 @@
     "careers_url": "https://wedigitek.com/",
     "category": "agencia",
     "city": "Setúbal",
-    "job_selector": "a[href*='job'], a[href*='career'], a[href*='vaga']"
+    "job_selector": "a[href*='job'], a[href*='career'], a[href*='vaga']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Doutor Finanças",
@@ -617,7 +673,9 @@
     "ashby_board": "moxie",
     "ashby_location_filter": "lisboa|lisbon|porto|portugal|remote",
     "category": "software",
-    "city": "Lisboa"
+    "city": "Lisboa",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Viator (TripAdvisor)",
@@ -636,7 +694,9 @@
     "careers_url": "https://fa-ewdg-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CynclyJobs/jobs",
     "category": "software",
     "city": "Lisboa",
-    "job_selector": "a[href*='job'], a[href*='requisitionId']"
+    "job_selector": "a[href*='job'], a[href*='requisitionId']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Typeform",
@@ -693,7 +753,9 @@
     "greenhouse_location_filter": "lisbon|portugal|emea|europe",
     "category": "remote",
     "city": null,
-    "remote_company": true
+    "remote_company": true,
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Salsify",
@@ -758,7 +820,9 @@
     "careers_url": "https://careers.microsoft.com/global/en/search-results?lc=Portugal",
     "category": "software",
     "city": "Lisboa",
-    "job_selector": "a[href*='careers.microsoft.com/global/en/job']"
+    "job_selector": "a[href*='careers.microsoft.com/global/en/job']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "Blip.pt",
@@ -777,7 +841,9 @@
     "careers_url": "https://www.prozis.com/pt/pt/jobs",
     "category": "ecommerce",
     "city": "Braga",
-    "job_selector": "a[href*='job'], a[href*='career']"
+    "job_selector": "a[href*='job'], a[href*='career']",
+    "is_active": false,
+    "_note": "HTML SPA / no relevant roles — disabled"
   },
   {
     "name": "SumUp",

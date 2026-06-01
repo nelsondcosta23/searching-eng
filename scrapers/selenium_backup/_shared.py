@@ -1,113 +1,23 @@
 """Shared helpers used across scrapers.
 
-Phase 4 update: Playwright browser pool replaces undetected_chromedriver.
-  - get_pw_browser()  — shared Chromium instance (one per process/worker)
-  - new_pw_context()  — fresh incognito context from the pool (<100ms)
-  - apply_stealth()   — anti-bot patches via playwright-stealth
+Centralizes patterns that were duplicated across most scrapers (audit Fase G):
+  - Word-boundary negative-keyword matching (also fixes a substring bug
+    where 'intern' would block 'international').
+  - HTTP session with retries + sane headers.
 
-Legacy Selenium helpers (init_chrome_with_timeout, get_chrome_major_version)
-are kept for the selenium_backup/ copies and any emergency rollback.
+The Chrome driver factory and per-scraper base class are deliberately not
+unified yet — each Selenium scraper has subtle UA / option / lock-cleanup
+differences and consolidating them is higher-risk than the value warrants
+for now.
 """
 from __future__ import annotations
 
 import re
-import threading
-import random
 from typing import Iterable, Optional
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Playwright browser pool — Phase 4
-# ─────────────────────────────────────────────────────────────────────────────
-
-_PW_LOCK     = threading.Lock()
-_pw_instance = None   # playwright SyncPlaywright handle
-_pw_browser  = None   # shared Chromium browser (kept alive across scrapes)
-
-_POOL_USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-]
-
-_PW_LAUNCH_ARGS = [
-    '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-    '--disable-gpu', '--disable-background-networking', '--disable-extensions',
-    '--disable-translate', '--disable-sync',
-]
-
-
-def get_pw_browser():
-    """Return the shared Playwright Chromium browser (singleton per process).
-
-    Launches on first call. Thread-safe — concurrent scrapers in the same
-    Celery worker share one browser instance and each get their own context.
-    """
-    global _pw_instance, _pw_browser
-    with _PW_LOCK:
-        if _pw_browser is None or not _pw_browser.is_connected():
-            try:
-                if _pw_instance is not None:
-                    try:
-                        _pw_instance.stop()
-                    except Exception:
-                        pass
-                from playwright.sync_api import sync_playwright
-                _pw_instance = sync_playwright().start()
-                _pw_browser = _pw_instance.chromium.launch(
-                    headless=True,
-                    args=_PW_LAUNCH_ARGS,
-                )
-            except Exception as exc:
-                raise RuntimeError(f"Playwright browser launch failed: {exc}") from exc
-    return _pw_browser
-
-
-def new_pw_context(user_agent: Optional[str] = None, block_images: bool = True):
-    """Create a fresh browser context from the shared pool.
-
-    Each context is isolated (own cookies, cache, storage) — equivalent to
-    a new incognito window. Caller MUST call context.close() when done.
-
-    Returns the context. Get a page with: page = context.new_page()
-    """
-    browser = get_pw_browser()
-    ua = user_agent or random.choice(_POOL_USER_AGENTS)
-    ctx = browser.new_context(
-        user_agent=ua,
-        viewport={'width': 1920, 'height': 1080},
-        locale='pt-PT',
-        extra_http_headers={'Accept-Language': 'pt-PT,pt;q=0.9,en-US;q=0.8,en;q=0.7'},
-    )
-    if block_images:
-        # Block images/fonts/media to speed up page loads significantly
-        ctx.route(
-            '**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2,ttf,otf,mp4,mp3}',
-            lambda route: route.abort(),
-        )
-    return ctx
-
-
-def apply_stealth(page) -> None:
-    """Apply anti-bot detection patches to a Playwright page.
-
-    Uses playwright-stealth if installed; falls back to a minimal manual patch
-    that hides the webdriver property.
-    """
-    try:
-        from playwright_stealth import stealth_sync
-        stealth_sync(page)
-        return
-    except ImportError:
-        pass
-    # Minimal fallback — hides navigator.webdriver
-    page.add_init_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,17 @@
+global:
+  scrape_interval:     30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  # job_api FastAPI — exposes /metrics via prometheus-client
+  - job_name: 'job_api'
+    static_configs:
+      - targets: ['job_api:8080']
+    metrics_path: /metrics
+
+  # PocketBase built-in health (no Prometheus metrics, just up/down)
+  - job_name: 'pocketbase'
+    static_configs:
+      - targets: ['pocketbase:8090']
+    metrics_path: /api/health
+    scheme: http

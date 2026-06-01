@@ -16,7 +16,7 @@ def obtain_recent_jobs():
         cursor = conn.cursor()
         cursor.execute('''
             SELECT titulo, empresa, localizacao, plataforma, link, data_scraped
-            FROM vagas
+            FROM jobs_global
             WHERE data_scraped >= ?
             ORDER BY plataforma, data_scraped DESC
         ''', (limit,))

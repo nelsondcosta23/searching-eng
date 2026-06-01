@@ -38,7 +38,12 @@ except ImportError as _e:
     __import__('sys').exit(1)
 
 from automation.db_helper import save_job, job_exists
-from scrapers._shared import negative_keyword_match, extract_seniority, new_pw_context, apply_stealth
+from scrapers._shared import negative_keyword_match, extract_seniority, init_chrome_with_timeout, get_chrome_major_version
+
+import undetected_chromedriver as uc
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://expressoemprego.pt"
@@ -48,10 +53,20 @@ BASE_URL = "https://expressoemprego.pt"
 _JOB_HREF_RE = re.compile(r'^/emprego/(?:[^/]+/)+(\d+)$')
 
 
-def _configurar_contexto():
-    """Create a Playwright browser context for Expresso scraping."""
-    ctx = new_pw_context(block_images=True)
-    return ctx
+def _configurar_driver() -> uc.Chrome:
+    tmp_dir = tempfile.mkdtemp(prefix='expresso-chrome-')
+    options = uc.ChromeOptions()
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--window-size=1920,1080')
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_argument('--lang=pt-PT,pt;q=0.9')
+    options.add_argument(f'--user-data-dir={tmp_dir}')
+    # Non-headless: requires DISPLAY=:99 (set by docker-entrypoint.sh via Xvfb)
+    driver = init_chrome_with_timeout(options, headless=False, version_main=get_chrome_major_version())
+    driver.set_page_load_timeout(30)
+    driver._tmp_profile_dir = tmp_dir
+    return driver
 
 
 def _extract_job_links(soup: BeautifulSoup) -> list[dict]:
@@ -60,9 +75,6 @@ def _extract_job_links(soup: BeautifulSoup) -> list[dict]:
     jobs = []
     for a in soup.find_all('a', href=True):
         href = a.get('href', '')
-        # Normalize: strip absolute BASE_URL prefix so the regex always sees a relative path
-        if href.startswith(BASE_URL):
-            href = href[len(BASE_URL):]
         m = _JOB_HREF_RE.match(href)
         if not m:
             continue
@@ -83,8 +95,8 @@ def _extract_job_links(soup: BeautifulSoup) -> list[dict]:
     return jobs
 
 
-def _extract_detail(ctx, link: str) -> dict:
-    """Opens a job detail page in a new Playwright page and extracts structured data."""
+def _extract_detail(driver: uc.Chrome, link: str) -> dict:
+    """Opens a job detail page in a new tab and extracts structured data."""
     result = {
         'descricao_completa': '',
         'empresa': 'Not specified',
@@ -92,45 +104,26 @@ def _extract_detail(ctx, link: str) -> dict:
         'salario': '',
         'tipo_contrato': '',
     }
-    page = None
     try:
-        page = ctx.new_page()
-        apply_stealth(page)
-        page.goto(link, wait_until='domcontentloaded', timeout=30000)
-        time.sleep(random.uniform(2.0, 3.5))
+        driver.execute_script(f"window.open({json.dumps(link)}, '_blank');")
+        driver.switch_to.window(driver.window_handles[-1])
+        time.sleep(random.uniform(2.5, 4.0))
 
-        soup = BeautifulSoup(page.content(), 'html.parser')
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
 
-        # Company name — try CSS selectors in priority order, then meta fallbacks
-        _company_found = False
-        for sel in [
-            'span.company-name', 'div.company-name', 'p.company-name',
-            '[class*="company-name"]', '[class*="empresa"]', '[class*="company_name"]',
-            '.offer-company', '.offer-header h2', 'h2.company',
-            '[data-testid*="company"]', '[class*="recruiter"]', '[class*="employer"]',
-        ]:
-            tag = soup.select_one(sel)
-            if tag:
-                name = tag.get_text(strip=True)[:80]
-                if name:
-                    result['empresa'] = name
-                    _company_found = True
+        # Company name
+        for sel in ['span.company-name', '.offer-company', 'h2.company', '.offer-header h2',
+                    'meta[property="og:description"]']:
+            if sel.startswith('meta'):
+                tag = soup.find('meta', property='og:description')
+                if tag and tag.get('content'):
+                    result['empresa'] = tag['content'].split('|')[0].strip()[:80]
                     break
-        if not _company_found:
-            # og:title is usually "Job Title | Company | Site" — take index 1
-            og_title = soup.find('meta', property='og:title')
-            if og_title and og_title.get('content'):
-                parts = [p.strip() for p in og_title['content'].split('|')]
-                if len(parts) >= 2 and parts[1]:
-                    result['empresa'] = parts[1][:80]
-                    _company_found = True
-        if not _company_found:
-            # og:description split: "Job Title | Company | ..." — take index 1
-            og_desc = soup.find('meta', property='og:description')
-            if og_desc and og_desc.get('content'):
-                parts = [p.strip() for p in og_desc['content'].split('|')]
-                if len(parts) >= 2 and parts[1]:
-                    result['empresa'] = parts[1][:80]
+            else:
+                tag = soup.select_one(sel)
+                if tag:
+                    result['empresa'] = tag.get_text(strip=True)[:80]
+                    break
 
         # Description — try multiple containers, pick the longest
         desc_candidates = []
@@ -176,11 +169,9 @@ def _extract_detail(ctx, link: str) -> dict:
     except Exception as e:
         print(f'  [Expresso detail] Error: {e}')
     finally:
-        if page:
-            try:
-                page.close()
-            except Exception:
-                pass
+        if len(driver.window_handles) > 1:
+            driver.close()
+            driver.switch_to.window(driver.window_handles[0])
 
     return result
 
@@ -191,12 +182,12 @@ def iniciar_scraper_expresso():
     print(f"  Keywords: {KEYWORDS}")
     print(f"{'='*55}")
 
-    ctx = None
-    main_page = None
+    if not os.environ.get('DISPLAY'):
+        print("  ⚠ DISPLAY not set — Xvfb may not be running. Attempting anyway.")
+
+    driver = None
     try:
-        ctx = _configurar_contexto()
-        main_page = ctx.new_page()
-        apply_stealth(main_page)
+        driver = _configurar_driver()
         total_saved = 0
 
         # Deduplicate queries
@@ -214,7 +205,7 @@ def iniciar_scraper_expresso():
         # which has caused 0-result runs when the DOM changed.
         print("  [Expresso] Warming up homepage for session cookies...")
         try:
-            main_page.goto(BASE_URL + '/', wait_until='domcontentloaded', timeout=30000)
+            driver.get(BASE_URL + '/')
             time.sleep(random.uniform(3.0, 5.0))
         except Exception as e:
             print(f"  [Expresso] Homepage warm-up warning: {e}")
@@ -230,11 +221,11 @@ def iniciar_scraper_expresso():
                     search_url = (f"{BASE_URL}/pesquisa?K={_url_quote(q)}"
                                   if page == 1 else
                                   f"{BASE_URL}/pesquisa?K={_url_quote(q)}&page={page}")
-                    main_page.goto(search_url, wait_until='domcontentloaded', timeout=30000)
-                    time.sleep(random.uniform(3.0, 5.0))
+                    driver.get(search_url)
+                    time.sleep(random.uniform(3.5, 5.5))
 
-                    print(f"  [page {page}] URL: {main_page.url}")
-                    soup = BeautifulSoup(main_page.content(), 'html.parser')
+                    print(f"  [page {page}] URL: {driver.current_url}")
+                    soup = BeautifulSoup(driver.page_source, 'html.parser')
                     job_list = _extract_job_links(soup)
                     print(f"  → {len(job_list)} job links found on page {page}")
 
@@ -258,7 +249,7 @@ def iniciar_scraper_expresso():
                         if job_exists(link):
                             continue
                         print(f"  [NEW] {titulo} | {job['localizacao']}")
-                        detail = _extract_detail(ctx, link)
+                        detail = _extract_detail(driver, link)
 
                         if NEGATIVE_COMPANIES and any(nc in (detail['empresa'] or '').lower() for nc in NEGATIVE_COMPANIES):
                             continue
@@ -310,11 +301,11 @@ def iniciar_scraper_expresso():
     except Exception as e:
         print(f"  [Expresso] Fatal error: {e}")
     finally:
-        if ctx:
-            try:
-                ctx.close()
-            except Exception:
-                pass
+        if driver:
+            driver.quit()
+            tmp_dir = getattr(driver, '_tmp_profile_dir', None)
+            if tmp_dir and os.path.exists(tmp_dir):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 if __name__ == '__main__':

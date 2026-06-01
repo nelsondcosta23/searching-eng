@@ -4,12 +4,13 @@ Plataforma automatizada de scraping/agregação de vagas (PT + internacional). S
 
 ## Big picture
 
-Quatro serviços orquestrados via `docker-compose.yml`:
+Cinco serviços orquestrados via `docker-compose.yml`:
 
 | Serviço | Porta | Função |
 |---|---|---|
 | `python_scraper` | — | Worker com cron (scrapers + scoring + verifier + webhook). Container vivo via `tail -f /dev/null`. |
 | `job_api` | 8080 | FastAPI REST para apps externas (auth via `API_KEY`). |
+| `pocketbase` | 8091 | User-facing DB: perfis, resultados, admin UI (`/_/`). SQLite interno. (8091 no host; 8090 internamente) |
 | `streamlit_app` | 8501 | Dashboard manual de filtragem. |
 | `cloudflare_tunnel` | — | Expõe `job_api` publicamente. |
 
@@ -23,12 +24,15 @@ Pipeline diário (cron, [config/crontab](config/crontab)):
 
 - [automation/orchestrator.py](automation/orchestrator.py) — coordena scrapers em **2 fases**: Net-Empregos (paralelo, RSS/HTTP) → Expresso/Sapo/Indeed/LinkedIn (sequencial, Selenium pesado).
 - [automation/db_helper.py](automation/db_helper.py) — **única** porta de escrita de jobs. Tem retry com backoff para `database is locked`. Todos os scrapers DEVEM usar `save_job()` / `job_exists()`.
-- [automation/profile_fetcher.py](automation/profile_fetcher.py) — gera search queries. Dois modos:
-  - **API mode** (default): obtém perfil de uma Supabase Edge Function, cacheia em `tmp/profile_cache.json` (TTL 1h).
-  - **Local mode**: se `TARGET_USER_ID` estiver no env, lê de `users_perfil` (SQLite local).
+- [automation/profile_fetcher.py](automation/profile_fetcher.py) — gera search queries. Três modos em cascata:
+  - **PocketBase** (new, default when `PB_URL`+credentials configurados): lê `user_profiles` collection. Substitui Supabase como fonte primária.
+  - **Supabase** (legacy fallback): Edge Function, cacheia em `tmp/profile_cache.json` (TTL 5min).
+  - **Local mode**: se `TARGET_USER_ID` estiver no env, lê de `users_perfil` (SQLite local) — usado por Celery tasks.
+- [automation/pb_client.py](automation/pb_client.py) — REST client para PocketBase. Singleton via `get_client()`. Gere auth de admin, colecções `user_profiles` e `job_results`, upsert de perfis e push de resultados. Todas as chamadas são non-fatal (retornam False/None em caso de erro).
+- [automation/pb_setup.py](automation/pb_setup.py) — script de migração one-shot: cria colecções + migra `users_perfil` SQLite → PocketBase.
 - [automation/job_scorer.py](automation/job_scorer.py) — TF-IDF caseiro (sem ML libs). Atribui `relevance_score` 0–100. Pesos: title×4, observacoes×2, descricao×1; phrase match dá bónus extra.
 - [automation/job_verifier.py](automation/job_verifier.py) — verifica links 404 / mensagens "expirada". Indeed/LinkedIn vão por Selenium; resto por `requests.head()`.
-- [automation/webhook_dispatcher.py](automation/webhook_dispatcher.py) — para cada user com `callback_url`, faz POST com top-N jobs do dia (`X-Webhook-Secret` header).
+- [automation/webhook_dispatcher.py](automation/webhook_dispatcher.py) — para cada user com `callback_url`, faz POST com top-N jobs do dia (`X-Webhook-Secret` header). Também faz push dos mesmos jobs para PocketBase `job_results` (todos os users activos, mesmo sem callback_url).
 - [scrapers/linkedin_scraper.py](scrapers/linkedin_scraper.py) — **híbrido**: Guest API (rápido, sem Selenium) para listing + Selenium para deep extract.
 - [scrapers/itjobs_scraper.py](scrapers/itjobs_scraper.py) — usa a API oficial JSON de itjobs.pt (auth via `ITJOBS_API_KEY`). Sem Selenium, paginação `limit`/`page`, sem campo de location na resposta (apenas `country` e `workModel`).
 - [scrapers/companies_scraper.py](scrapers/companies_scraper.py) — scraper unificado para portais directos das empresas. Lê [config/companies.json](config/companies.json) e despacha por estratégia: **Ashby > Lever > Greenhouse > HTML**. As 3 ATS APIs são públicas, sem auth. Cada vaga vai para a BD com `plataforma="Companies: <Empresa> (<Strategy>)"` para se distinguirem na dashboard. Filtros de localização suportam regex `*_location_filter` por empresa, com defaults PT/Remote+EU e exclusão automática de regiões não-EU (Brazil, US, Philippines, etc.). HTML strategy é best-effort — muitos portais são SPAs que devolvem 0 jobs (aceitável).
@@ -65,6 +69,12 @@ docker exec python_scraper python /app/automation/orchestrator.py
 
 # Re-score de todos os jobs (após mudar perfil)
 docker exec python_scraper python /app/automation/job_scorer.py --rescore-all
+
+# Arrancar PocketBase (primeira vez: criar conta admin em http://localhost:8090/_/ )
+docker-compose up -d pocketbase
+
+# Migrar users_perfil → PocketBase (correr depois de criar a conta admin)
+docker exec python_scraper python /app/automation/pb_setup.py
 
 # Verificar BD ad-hoc
 docker exec python_scraper sqlite3 /app/database/vagas.db "SELECT plataforma, COUNT(*) FROM vagas GROUP BY plataforma"

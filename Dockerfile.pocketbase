@@ -1,0 +1,19 @@
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates curl unzip
+
+# PocketBase version — bump here to upgrade
+ARG PB_VERSION=0.22.22
+RUN curl -fsSL \
+    "https://github.com/pocketbase/pocketbase/releases/download/v${PB_VERSION}/pocketbase_${PB_VERSION}_linux_amd64.zip" \
+    -o /tmp/pb.zip \
+    && unzip /tmp/pb.zip -d /pb \
+    && rm /tmp/pb.zip \
+    && chmod +x /pb/pocketbase
+
+WORKDIR /pb
+VOLUME ["/pb/pb_data"]
+EXPOSE 8090
+
+ENTRYPOINT ["/pb/pocketbase"]
+CMD ["serve", "--http=0.0.0.0:8090"]

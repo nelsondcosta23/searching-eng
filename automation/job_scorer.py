@@ -247,15 +247,16 @@ def score_and_update_unscored_jobs():
     if neg_keywords:
         print(f"[scorer] Negative keywords active: {len(neg_keywords)} terms")
 
-    # Phase 1: read candidates (short-lived read connection)
+    # Phase 1: read unscored candidates (short-lived read connection)
     with transaction(row_factory=sqlite3.Row) as conn:
         rows = conn.execute("""
-            SELECT id, titulo, empresa,
-                   COALESCE(descricao_completa, '') AS descricao_completa,
-                   COALESCE(observacoes, '')         AS observacoes,
-                   COALESCE(salario, '')             AS salario
-            FROM vagas
-            WHERE relevance_score IS NULL AND user_id = ?
+            SELECT jg.id, jg.titulo, jg.empresa,
+                   COALESCE(jg.descricao,    '') AS descricao_completa,
+                   COALESCE(jg.observacoes,  '') AS observacoes,
+                   COALESCE(jg.salario,      '') AS salario
+            FROM jobs_global jg
+            JOIN jobs_users ju ON jg.id = ju.job_id
+            WHERE ju.relevance_score IS NULL AND ju.user_id = ?
         """, (user_id,)).fetchall()
 
     if not rows:
@@ -264,7 +265,7 @@ def score_and_update_unscored_jobs():
 
     print(f"[scorer] Scoring {len(rows)} unscored jobs (batch={_SCORER_BATCH_SIZE})...")
 
-    # Phase 2: compute scores in memory first (CPU-only, no DB lock held)
+    # Phase 2: compute scores in memory (CPU-only, no DB lock held)
     scored_pairs = []
     for row in rows:
         score = _score_job(
@@ -280,15 +281,15 @@ def score_and_update_unscored_jobs():
         )
         scored_pairs.append((score, row['id']))
 
-    # Phase 3: write in batches with retry
+    # Phase 3: write scores to jobs_users in batches
     total_written = 0
     for i in range(0, len(scored_pairs), _SCORER_BATCH_SIZE):
         batch = scored_pairs[i:i + _SCORER_BATCH_SIZE]
         try:
             with transaction() as conn:
                 conn.executemany(
-                    "UPDATE vagas SET relevance_score = ? WHERE id = ?",
-                    batch,
+                    "UPDATE jobs_users SET relevance_score = ? WHERE job_id = ? AND user_id = ?",
+                    [(score, job_id, user_id) for score, job_id in batch],
                 )
             total_written += len(batch)
         except Exception as e:
@@ -296,13 +297,14 @@ def score_and_update_unscored_jobs():
 
     print(f"[scorer] ✅ Scored {total_written}/{len(rows)} jobs successfully.")
 
-    # Phase 4: show top 5 matches (separate short read)
+    # Phase 4: show top 5 matches
     with transaction(row_factory=sqlite3.Row) as conn:
         top = conn.execute("""
-            SELECT titulo, empresa, plataforma, relevance_score
-            FROM vagas
-            WHERE relevance_score IS NOT NULL AND user_id = ?
-            ORDER BY relevance_score DESC
+            SELECT jg.titulo, jg.empresa, jg.plataforma, ju.relevance_score
+            FROM jobs_global jg
+            JOIN jobs_users ju ON jg.id = ju.job_id
+            WHERE ju.relevance_score IS NOT NULL AND ju.user_id = ?
+            ORDER BY ju.relevance_score DESC
             LIMIT 5
         """, (user_id,)).fetchall()
 
@@ -326,14 +328,16 @@ def backfill_enrichment():
 
     with transaction(row_factory=sqlite3.Row) as conn:
         rows = conn.execute("""
-            SELECT id, titulo, descricao_completa, salario, nivel_experiencia
-            FROM vagas
-            WHERE user_id = ?
-              AND descricao_completa IS NOT NULL
-              AND LENGTH(descricao_completa) > 100
+            SELECT jg.id, jg.titulo, jg.descricao AS descricao_completa,
+                   jg.salario, jg.nivel_experiencia
+            FROM jobs_global jg
+            JOIN jobs_users ju ON jg.id = ju.job_id
+            WHERE ju.user_id = ?
+              AND jg.descricao IS NOT NULL
+              AND LENGTH(jg.descricao) > 100
               AND (
-                  nivel_experiencia IS NULL OR nivel_experiencia = ''
-                  OR salario IS NULL OR salario = ''
+                  jg.nivel_experiencia IS NULL OR jg.nivel_experiencia = ''
+                  OR jg.salario IS NULL OR jg.salario = ''
               )
         """, (user_id,)).fetchall()
 
@@ -366,7 +370,7 @@ def backfill_enrichment():
     if pairs:
         with transaction() as conn:
             conn.executemany(
-                "UPDATE vagas SET nivel_experiencia = ?, salario = ? WHERE id = ?",
+                "UPDATE jobs_global SET nivel_experiencia = ?, salario = ? WHERE id = ?",
                 pairs,
             )
 
@@ -387,7 +391,7 @@ def rescore_all_jobs():
     user_id = get_user_id()
     print(f"[scorer] Force-rescoring ALL jobs for user: {user_id}...")
     with transaction() as conn:
-        conn.execute("UPDATE vagas SET relevance_score = NULL WHERE user_id = ?", (user_id,))
+        conn.execute("UPDATE jobs_users SET relevance_score = NULL WHERE user_id = ?", (user_id,))
 
     score_and_update_unscored_jobs()
 

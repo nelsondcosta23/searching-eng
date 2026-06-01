@@ -5,12 +5,17 @@ import re
 import os
 import sys
 import json
+import tempfile
+import shutil
 from datetime import datetime
 from bs4 import BeautifulSoup
-# Playwright browser pool (Phase 4)
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
-PLATAFORMA = 'LinkedIn PT (Playwright)'
+PLATAFORMA = 'LinkedIn PT (Selenium)'
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from automation.db_helper import save_job, job_exists
@@ -25,7 +30,7 @@ except ImportError as _e:
     print(f"FATAL: profile_fetcher import failed: {_e}. Aborting linkedin_scraper.", file=__import__('sys').stderr)
     __import__('sys').exit(1)
 
-from scrapers._shared import negative_keyword_match, new_pw_context, apply_stealth, strip_html
+from scrapers._shared import negative_keyword_match, init_chrome_with_timeout, get_chrome_major_version, strip_html
 
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))
 PRIORITY_PAGES   = int(os.environ.get('LINKEDIN_PRIORITY_PAGES', '4'))   # pages for priority queries
@@ -51,11 +56,9 @@ def _normalize_linkedin_url(link: str) -> str:
 
 def _build_guest_url(keywords: str, location: str, start: int, remote: bool) -> str:
     import urllib.parse
-    # f_TPR (time filter) is intentionally omitted from the Guest API URL —
-    # the endpoint ignores or mishandles it and returns 0 results when present.
-    # Freshness filtering is already applied by the Playwright/browser URLs in
-    # generate_linkedin_urls() via f_TPR=r86400.
-    params = {'keywords': keywords, 'location': location, 'start': start}
+    # f_TPR=r86400 — last 24 hours. Applied to ALL searches so we only get fresh
+    # listings and don't waste Selenium budget on jobs already in DB.
+    params = {'keywords': keywords, 'location': location, 'start': start, 'f_TPR': 'r86400'}
     if remote:
         params['f_WT'] = '2'
     return f"{GUEST_API_BASE}?{urllib.parse.urlencode(params)}"
@@ -124,9 +127,34 @@ def _fetch_listing_via_guest_api(keywords: str, location: str, start: int, remot
 # ─────────────────────────────────────────────────────────────────────────────
 # Deep Extraction (Selenium — for individual job description pages)
 # ─────────────────────────────────────────────────────────────────────────────
-def _configurar_contexto():
-    """Create a Playwright browser context for LinkedIn scraping."""
-    return new_pw_context(block_images=True)
+def _configurar_driver():
+    # Clean up any stale lock from old persistent profile (legacy path)
+    old_profile_dir = "/tmp/linkedin-chrome-profile"
+    lock_file = os.path.join(old_profile_dir, 'SingletonLock')
+    if os.path.exists(lock_file):
+        try:
+            os.remove(lock_file)
+            print("  [LinkedIn] Removed stale Chrome lock file.")
+        except Exception:
+            pass
+
+    # Use a fresh temp directory for this run — avoids ALL lock conflicts
+    tmp_profile_dir = tempfile.mkdtemp(prefix='linkedin-chrome-')
+
+    options = uc.ChromeOptions()
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-setuid-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument(f"--user-agent={random.choice(USER_AGENTS)}")
+    options.add_argument("--lang=pt-PT,pt;q=0.9,en;q=0.8")
+    options.add_argument(f"--user-data-dir={tmp_profile_dir}")
+
+    driver = init_chrome_with_timeout(options, headless=True, version_main=get_chrome_major_version())
+    driver._tmp_profile_dir = tmp_profile_dir
+    return driver
 
 
 def _parse_linkedin_soup(soup: BeautifulSoup) -> dict:
@@ -183,21 +211,20 @@ def _extrair_detalhes_requests(link: str) -> dict:
     return detalhes
 
 
-def _extrair_detalhes_playwright(ctx, link: str, titulo: str) -> dict:
-    """Playwright-based deep extraction fallback when HTTP returns no description."""
+def _extrair_detalhes_selenium(driver, link: str, titulo: str) -> dict:
+    """Full Selenium-based deep extraction as fallback."""
     detalhes = {'descricao_completa': '', 'recrutador_nome': '', 'recrutador_link': '',
                  'observacoes': '', 'salario': '', 'tipo_contrato': '', 'nivel_experiencia': ''}
-    page = None
     try:
-        page = ctx.new_page()
-        apply_stealth(page)
-        page.goto(link, wait_until='domcontentloaded', timeout=30000)
+        driver.execute_script(f"window.open({json.dumps(link)}, '_blank');")
+        driver.switch_to.window(driver.window_handles[-1])
         time.sleep(1.5 + random.uniform(0.5, 1.5))
 
-        soup = BeautifulSoup(page.content(), 'html.parser')
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
         parsed = _parse_linkedin_soup(soup)
         detalhes.update(parsed)
 
+        # Recruiter info only available via Selenium (not in public HTTP response)
         rec_tag = soup.find(class_='message-the-recruiter__name') or soup.find('h3', class_='base-main-card__title')
         if rec_tag:
             detalhes['recrutador_nome'] = rec_tag.get_text().strip()
@@ -206,22 +233,12 @@ def _extrair_detalhes_playwright(ctx, link: str, titulo: str) -> dict:
             detalhes['recrutador_link'] = rec_link.get('href', '').split('?')[0]
 
     except Exception as e:
-        print(f"  [Playwright Deep] Error for '{titulo}': {e}")
+        print(f"  [Selenium Deep] Error for '{titulo}': {e}")
     finally:
-        if page:
-            try:
-                page.close()
-            except Exception:
-                pass
+        if len(driver.window_handles) > 1:
+            driver.close()
+            driver.switch_to.window(driver.window_handles[0])
     return detalhes
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Guest API circuit-breaker
-# Flipped to False on the first run-time failure; all subsequent pages and
-# searches skip the HTTP attempt and go straight to Playwright.
-# ─────────────────────────────────────────────────────────────────────────────
-_GUEST_API_OK = True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -238,9 +255,7 @@ def _parse_url_parts(full_url: str) -> tuple[str, str, bool]:
     return keywords, location, remote
 
 
-def processar_uma_pesquisa(cat_nome: str, url_info: dict, ctx, vagas_ja_inseridas: int, seen_jobs: set) -> int:
-    global _GUEST_API_OK
-
+def processar_uma_pesquisa(cat_nome: str, url_info: dict, driver, vagas_ja_inseridas: int, seen_jobs: set) -> int:
     url       = url_info['url']
     is_prio   = url_info.get('is_priority', False)
     max_pages = PRIORITY_PAGES if is_prio else STANDARD_PAGES
@@ -256,34 +271,28 @@ def processar_uma_pesquisa(cat_nome: str, url_info: dict, ctx, vagas_ja_inserida
         start = page_num * 25
         print(f"  → Page {page_num + 1}/{max_pages} (offset={start})")
 
-        jobs_on_page = []
-        if _GUEST_API_OK:
-            # Try Guest API; retry once with a different UA before giving up.
-            jobs_on_page = _fetch_listing_via_guest_api(keywords, location, start, remote, ua)
-            if not jobs_on_page:
-                retry_ua = random.choice([u for u in USER_AGENTS if u != ua] or USER_AGENTS)
-                jobs_on_page = _fetch_listing_via_guest_api(keywords, location, start, remote, retry_ua)
-            if not jobs_on_page:
-                # Open the circuit-breaker: skip Guest API for the rest of this run.
-                _GUEST_API_OK = False
-                print(f"  → Guest API returned 0 results — disabling for this run, using Playwright only.")
-
+        # Try fast Guest API first. On empty result, retry once with a different
+        # User-Agent before paying the Selenium fallback cost — transient 429s
+        # and soft-blocks often clear on a second request.
+        jobs_on_page = _fetch_listing_via_guest_api(keywords, location, start, remote, ua)
+        if not jobs_on_page:
+            retry_ua = random.choice([u for u in USER_AGENTS if u != ua] or USER_AGENTS)
+            jobs_on_page = _fetch_listing_via_guest_api(keywords, location, start, remote, retry_ua)
         use_selenium_listing = not jobs_on_page
 
         if use_selenium_listing:
-            print(f"  → Playwright listing (offset={start})...")
-            listing_page = None
+            # Fallback: use Selenium to fetch the listing page
+            print(f"  → Guest API returned 0 results, falling back to Selenium for listing...")
             try:
-                listing_page = ctx.new_page()
-                apply_stealth(listing_page)
                 paginated_url = f"{url}&start={start}"
-                listing_page.goto(paginated_url, wait_until='domcontentloaded', timeout=30000)
-                time.sleep(random.uniform(4.0, 7.0))
+                driver.get(paginated_url)
+                time.sleep(random.uniform(5.0, 8.0))
                 for _ in range(2):
-                    listing_page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                     time.sleep(random.uniform(1.5, 3.0))
-                listing_page.wait_for_selector('.base-search-card', timeout=15000)
-                soup = BeautifulSoup(listing_page.content(), 'html.parser')
+                wait = WebDriverWait(driver, 15)
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '.base-search-card')))
+                soup = BeautifulSoup(driver.page_source, 'html.parser')
                 cards = soup.find_all(class_='base-search-card') or soup.find_all(class_='job-search-card')
                 for vaga in cards:
                     try:
@@ -308,14 +317,8 @@ def processar_uma_pesquisa(cat_nome: str, url_info: dict, ctx, vagas_ja_inserida
                     except Exception:
                         continue
             except Exception as e:
-                print(f"  → Playwright listing fallback also failed: {e}")
+                print(f"  → Selenium listing fallback also failed: {e}")
                 break
-            finally:
-                if listing_page:
-                    try:
-                        listing_page.close()
-                    except Exception:
-                        pass
 
         if not jobs_on_page:
             print(f"  → No jobs found on page {page_num + 1}. Done.")
@@ -360,9 +363,9 @@ def processar_uma_pesquisa(cat_nome: str, url_info: dict, ctx, vagas_ja_inserida
             detalhes = _extrair_detalhes_requests(job['link'])
             needs_selenium = not detalhes['descricao_completa']
 
-            if needs_selenium and ctx:
-                detalhes = _extrair_detalhes_playwright(ctx, job['link'], job['titulo'])
-                time.sleep(random.uniform(0.5, 1.5))
+            if needs_selenium and driver:
+                detalhes = _extrair_detalhes_selenium(driver, job['link'], job['titulo'])
+                time.sleep(random.uniform(0.5, 1.5))  # gentle pause after Selenium use
 
             if save_job(
                 user_id=USER_ID, plataforma=PLATAFORMA, id_externo=job['id_externo'],
@@ -378,7 +381,7 @@ def processar_uma_pesquisa(cat_nome: str, url_info: dict, ctx, vagas_ja_inserida
             ):
                 novas_vagas_cont += 1
                 total = vagas_ja_inseridas + novas_vagas_cont
-                method = "HTTP" if not needs_selenium else "Playwright"
+                method = "HTTP" if not needs_selenium else "Selenium"
                 print(f"    ✅ [{method}] {job['titulo']} @ {job['empresa']} [{total} total]")
                 if MAX_JOBS > 0 and total >= MAX_JOBS:
                     print(f"  [LIMIT] Max {MAX_JOBS} jobs reached.")
@@ -401,21 +404,23 @@ def iniciar_scraper_linkedin():
     print(f"  ◇ Standard searches: {len(standard_pesquisas)} ({STANDARD_PAGES} pages each)")
     print(f"{'='*60}")
 
-    ctx = None
+    driver = None
     try:
-        ctx = _configurar_contexto()
+        driver = _configurar_driver()
         total = 0
-        seen_jobs: set = set()
+        seen_jobs: set = set()  # dedup (titulo, empresa) across all searches this run
 
+        # Priority searches first
         for cat, url_info in priority_pesquisas.items():
-            novas = processar_uma_pesquisa(cat, url_info, ctx, total, seen_jobs)
+            novas = processar_uma_pesquisa(cat, url_info, driver, total, seen_jobs)
             total += novas
             if MAX_JOBS > 0 and total >= MAX_JOBS:
                 break
 
+        # Then standard searches
         if not (MAX_JOBS > 0 and total >= MAX_JOBS):
             for cat, url_info in standard_pesquisas.items():
-                novas = processar_uma_pesquisa(cat, url_info, ctx, total, seen_jobs)
+                novas = processar_uma_pesquisa(cat, url_info, driver, total, seen_jobs)
                 total += novas
                 if MAX_JOBS > 0 and total >= MAX_JOBS:
                     break
@@ -425,12 +430,12 @@ def iniciar_scraper_linkedin():
         print(f"{'='*60}")
 
     finally:
-        if ctx:
-            try:
-                ctx.close()
-                print("  Playwright context closed.")
-            except Exception:
-                pass
+        if driver:
+            driver.quit()
+            print("  Selenium driver closed.")
+            tmp_dir = getattr(driver, '_tmp_profile_dir', None)
+            if tmp_dir and os.path.exists(tmp_dir):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 if __name__ == '__main__':

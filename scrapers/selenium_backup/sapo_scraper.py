@@ -10,7 +10,10 @@ import tempfile
 import shutil
 from datetime import datetime
 
-# Playwright browser pool (Phase 4 — replaces undetected_chromedriver)
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from automation.db_helper import save_job, job_exists
@@ -25,7 +28,7 @@ except ImportError as _e:
     print(f"FATAL: profile_fetcher import failed: {_e}. Aborting sapo_scraper.", file=__import__('sys').stderr)
     __import__('sys').exit(1)
 
-from scrapers._shared import make_session, DEFAULT_HEADERS, negative_keyword_match, new_pw_context, apply_stealth
+from scrapers._shared import make_session, DEFAULT_HEADERS, negative_keyword_match, init_chrome_with_timeout, get_chrome_major_version
 
 PLATAFORMA = "Sapo Jobs"
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
@@ -34,27 +37,55 @@ MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))  # 0 = unlimited
 HEADERS = DEFAULT_HEADERS
 session = make_session(retries=3)
 
-def configurar_contexto():
-    """Create a Playwright browser context for Sapo deep extraction."""
-    ctx = new_pw_context(block_images=True)
-    return ctx
-
-def extrair_detalhes_sapo(ctx, link_completo):
+def configurar_driver():
+    """Configures the Undetected ChromeDriver with stealth optimizations.
+    Uses a fresh temp directory per run to avoid SingletonLock conflicts.
+    Auto-detects Chrome version to download the matching ChromeDriver.
     """
-    Opens a Sapo job page in a new Playwright page and extracts the full
-    description and metadata chips.
+    # Clean up any stale lock from old persistent profile (legacy path)
+    old_profile_dir = "/tmp/sapo-chrome-profile"
+    lock_file = os.path.join(old_profile_dir, 'SingletonLock')
+    if os.path.exists(lock_file):
+        try:
+            os.remove(lock_file)
+            print("  [Sapo] Removed stale Chrome lock file.")
+        except Exception:
+            pass
+
+    # Use a fresh temp directory for this run — avoids ALL lock conflicts
+    tmp_profile_dir = tempfile.mkdtemp(prefix='sapo-chrome-')
+
+    options = uc.ChromeOptions()
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-setuid-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument(f"--user-agent={HEADERS['User-Agent']}")
+    options.add_argument("--lang=pt-PT,pt;q=0.9,en;q=0.8")
+    options.add_argument(f"--user-data-dir={tmp_profile_dir}")
+
+    driver = init_chrome_with_timeout(options, headless=True, version_main=get_chrome_major_version())
+    driver._tmp_profile_dir = tmp_profile_dir
+    return driver
+
+def extrair_detalhes_sapo(driver, link_completo):
+    """
+    Opens a Sapo job page in a new tab and extracts the full description
+    and additional metadata chips (salary, hybrid, company type, etc.).
     Returns a dict with: descricao_completa, observacoes_extra.
     """
     detalhes = {'descricao_completa': '', 'observacoes_extra': []}
-    page = None
+
     try:
-        page = ctx.new_page()
-        apply_stealth(page)
-        page.goto(link_completo, wait_until='domcontentloaded', timeout=30000)
+        driver.execute_script(f"window.open({json.dumps(link_completo)}, '_blank');")
+        driver.switch_to.window(driver.window_handles[-1])
         time.sleep(1.5 + random.uniform(0.2, 0.8))
 
         # --- Full Description (JSON-LD 5-Star Extraction) ---
-        deep_soup = BeautifulSoup(page.content(), 'html.parser')
+        time.sleep(2.0)
+        deep_soup = BeautifulSoup(driver.page_source, 'html.parser')
         
         desc_found = False
         json_ld_scripts = deep_soup.find_all('script', type='application/ld+json')
@@ -105,11 +136,9 @@ def extrair_detalhes_sapo(ctx, link_completo):
     except Exception as e:
         print(f"  [Deep Extraction] Error: {e}")
     finally:
-        if page:
-            try:
-                page.close()
-            except Exception:
-                pass
+        if len(driver.window_handles) > 1:
+            driver.close()
+            driver.switch_to.window(driver.window_handles[0])
 
     return detalhes
 
@@ -267,19 +296,20 @@ def iniciar_scraper_sapo():
         print("  [Sapo] No searches generated — profile has no PT-compatible locations. Skipping.")
         return
 
-    # Playwright context for deep extraction of job detail pages.
-    # Falls back to HTTP-only mode (snippet descriptions) if browser fails.
-    ctx = None
+    # Chrome is only needed for deep-extraction of individual job pages.
+    # Try to init it once; if it fails we continue in HTTP-only mode (snippet
+    # descriptions only) rather than aborting the entire scraper.
+    driver = None
     try:
-        ctx = configurar_contexto()
+        driver = configurar_driver()
     except Exception as e:
-        print(f"  [Sapo] ⚠ Browser init failed — running in HTTP-only mode (no deep extraction): {e}")
+        print(f"  [Sapo] ⚠ Chrome init failed — running in HTTP-only mode (no deep extraction): {e}")
 
     try:
         total_novas_global = 0
 
         for pesquisa_nome, url_pesquisa in PESQUISAS.items():
-            novas = processar_pesquisa(pesquisa_nome, url_pesquisa, ctx, total_novas_global)
+            novas = processar_pesquisa(pesquisa_nome, url_pesquisa, driver, total_novas_global)
             total_novas_global += novas
             if MAX_JOBS > 0 and total_novas_global >= MAX_JOBS:
                 print(f"[GLOBAL LIMIT REACHED] Stopping Sapo multi-search.")
@@ -292,11 +322,15 @@ def iniciar_scraper_sapo():
     except Exception as e:
         print(f"  [Sapo] General error: {e}")
     finally:
-        if ctx:
-            try:
-                ctx.close()
-            except Exception:
-                pass
+        if driver:
+            driver.quit()
+            # Clean up the temporary Chrome profile dir to avoid disk bloat
+            tmp_dir = getattr(driver, '_tmp_profile_dir', None)
+            if tmp_dir and os.path.exists(tmp_dir):
+                try:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
 if __name__ == '__main__':
     iniciar_scraper_sapo()

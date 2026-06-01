@@ -4,10 +4,15 @@ import requests
 import re
 import json
 from datetime import datetime
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
+import undetected_chromedriver as uc
 import os
 import sys
-# Playwright browser pool (Phase 4)
+import tempfile
+import shutil
 
 # Global Configurations
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
@@ -28,7 +33,7 @@ except ImportError as _e:
     KEYWORDS = []
     NEGATIVE_KEYWORDS = []
 
-from scrapers._shared import negative_keyword_match, new_pw_context, apply_stealth
+from scrapers._shared import negative_keyword_match, init_chrome_with_timeout, get_chrome_major_version
 
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))   # 0 = unlimited
 MAX_PAGES = int(os.environ.get('INDEED_MAX_PAGES', '2'))        # Pages per search — reduced from 3; Indeed bot-detection means page 3 rarely yields new jobs
@@ -42,16 +47,44 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
-def configurar_contexto():
-    """Create a Playwright browser context + main page for Indeed scraping."""
-    ctx = new_pw_context(block_images=True)
-    page = ctx.new_page()
-    apply_stealth(page)
-    return ctx, page
-
-def extrair_detalhes_vaga(ctx, link_absoluto, titulo):
+def configurar_driver():
+    """Configures the Undetected ChromeDriver with stealth optimizations.
+    Uses a fresh temp directory per run to avoid SingletonLock conflicts.
+    Auto-detects Chrome version to download the matching ChromeDriver.
     """
-    Opens a job detail page in a new Playwright page and performs deep extraction.
+    print("Configuring Undetected ChromeDriver...")
+
+    # Clean up any stale lock from old persistent profile (legacy path)
+    old_profile_dir = "/tmp/indeed-chrome-profile"
+    lock_file = os.path.join(old_profile_dir, 'SingletonLock')
+    if os.path.exists(lock_file):
+        try:
+            os.remove(lock_file)
+            print("  [Indeed] Removed stale Chrome lock file.")
+        except Exception:
+            pass
+
+    # Use a fresh temp directory for this run — avoids ALL lock conflicts
+    tmp_profile_dir = tempfile.mkdtemp(prefix='indeed-chrome-')
+
+    options = uc.ChromeOptions()
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-setuid-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument(f"--user-agent={random.choice(USER_AGENTS)}")
+    options.add_argument("--lang=pt-PT,pt;q=0.9,en;q=0.8")
+    options.add_argument(f"--user-data-dir={tmp_profile_dir}")
+
+    driver = init_chrome_with_timeout(options, headless=True, version_main=get_chrome_major_version())
+    driver._tmp_profile_dir = tmp_profile_dir
+    return driver
+
+def extrair_detalhes_vaga(driver, link_absoluto, titulo):
+    """
+    Opens a job listing in a new tab and performs deep extraction.
     Returns a dict with: descricao_completa, salario, tipo_contrato, observacoes.
     """
     detalhes = {
@@ -61,14 +94,13 @@ def extrair_detalhes_vaga(ctx, link_absoluto, titulo):
         'nivel_experiencia': '',
         'observacoes': '',
     }
-    page = None
+
     try:
-        page = ctx.new_page()
-        apply_stealth(page)
-        page.goto(link_absoluto, wait_until='domcontentloaded', timeout=30000)
+        driver.execute_script(f"window.open({json.dumps(link_absoluto)}, '_blank');")
+        driver.switch_to.window(driver.window_handles[-1])
         time.sleep(1.5 + random.uniform(0.5, 1.5))
 
-        deep_soup = BeautifulSoup(page.content(), 'html.parser')
+        deep_soup = BeautifulSoup(driver.page_source, 'html.parser')
 
         # --- Full Job Description ---
         desc_tag = (
@@ -80,23 +112,13 @@ def extrair_detalhes_vaga(ctx, link_absoluto, titulo):
             detalhes['descricao_completa'] = desc_tag.get_text(separator='\n').strip()
 
         # --- Salary ---
-        # Use specific salary test-IDs first; fall back to attribute snippets only
-        # when the text actually contains a currency/numeric pattern — prevents
-        # "Período Integral" (contract type chip) from being stored as salary.
         salary_tag = (
-            deep_soup.find(attrs={'data-testid': 'salaryInfoAndJobType'}) or
-            deep_soup.find(attrs={'data-testid': 'jobsearch-SalaryInfoSection'}) or
-            deep_soup.find(class_=re.compile(r'salary-snippet|SalaryInfo|compensation', re.I))
+            deep_soup.find(attrs={'data-testid': 'attribute_snippet_testid'}) or
+            deep_soup.find(class_=re.compile(r'salary-snippet|compensation', re.I))
         )
-        if not salary_tag:
-            for tag in deep_soup.find_all(attrs={'data-testid': 'attribute_snippet_testid'}):
-                text = tag.get_text(strip=True)
-                if re.search(r'[€$£₹¥]|\d[\d.,\s]*[kKmM]?\s*/\s*(ano|m[eê]s|hora|year|month|hour)', text, re.I):
-                    salary_tag = tag
-                    break
         if salary_tag:
             salary_text = salary_tag.get_text(strip=True)
-            if salary_text and re.search(r'[€$£₹¥]|\d[\d.,\s]+', salary_text):
+            if salary_text:
                 detalhes['salario'] = salary_text
 
         # --- Job Type & Observations (chips/attributes) ---
@@ -131,15 +153,13 @@ def extrair_detalhes_vaga(ctx, link_absoluto, titulo):
     except Exception as e:
         print(f"  [Deep Extraction] Error for '{titulo}': {e}")
     finally:
-        if page:
-            try:
-                page.close()
-            except Exception:
-                pass
+        if len(driver.window_handles) > 1:
+            driver.close()
+            driver.switch_to.window(driver.window_handles[0])
 
     return detalhes
 
-def processar_uma_pesquisa(ctx, main_page, categoria_nome, url_info, vagas_ja_inseridas=0):
+def processar_uma_pesquisa(driver, categoria_nome, url_info, vagas_ja_inseridas=0):
     print(f"\n[Indeed] Search: {categoria_nome}")
 
     url_base = url_info['url'] if isinstance(url_info, dict) else url_info
@@ -152,14 +172,20 @@ def processar_uma_pesquisa(ctx, main_page, categoria_nome, url_info, vagas_ja_in
         print(f"  → Page {page_num + 1}/{MAX_PAGES} (offset={offset})")
 
         try:
-            main_page.goto(url_pagina, wait_until='domcontentloaded', timeout=30000)
-            time.sleep(random.uniform(4.0, 7.0))
+            driver.get(url_pagina)
+            time.sleep(random.uniform(5.0, 8.0))
 
-            # --- Wait for job cards ---
+            # --- Wait for job cards (Flexible Selectors) ---
+            wait_selectors = [
+                (By.CSS_SELECTOR, '.jcs-JobTitle'),
+                (By.CSS_SELECTOR, '.cardOutline'),
+                (By.CSS_SELECTOR, '[data-testid="jobCard"]')
+            ]
+            
             cards_found = False
-            for selector in ['.jcs-JobTitle', '.cardOutline', '[data-testid="jobCard"]']:
+            for strategy, selector in wait_selectors:
                 try:
-                    main_page.wait_for_selector(selector, timeout=10000)
+                    WebDriverWait(driver, 10).until(EC.presence_of_element_located((strategy, selector)))
                     cards_found = True
                     break
                 except Exception:
@@ -169,7 +195,7 @@ def processar_uma_pesquisa(ctx, main_page, categoria_nome, url_info, vagas_ja_in
                 print(f"  → No job cards detected on page {page_num + 1}. Stopping pagination.")
                 break
 
-            soup = BeautifulSoup(main_page.content(), 'html.parser')
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
             
             # --- Extract Job Cards ---
             # Try to find the common parent of job title and company
@@ -240,7 +266,7 @@ def processar_uma_pesquisa(ctx, main_page, categoria_nome, url_info, vagas_ja_in
                         continue
 
                     if not job_exists(link_absoluto):
-                        detalhes = extrair_detalhes_vaga(ctx, link_absoluto, titulo)
+                        detalhes = extrair_detalhes_vaga(driver, link_absoluto, titulo)
 
                         # Prefer deep-extracted salary, fallback to card preview
                         salario_final = detalhes['salario'] or salario_preview
@@ -260,7 +286,7 @@ def processar_uma_pesquisa(ctx, main_page, categoria_nome, url_info, vagas_ja_in
                             print(f"    ✅ Saved: {titulo} @ {empresa} [{total_agora} total]")
                             if MAX_JOBS > 0 and total_agora >= MAX_JOBS:
                                 print(f"  [LIMIT REACHED] Max {MAX_JOBS} jobs. Stopping.")
-                                return novas_vagas_cont, ctx, main_page
+                                return novas_vagas_cont, driver
                 except Exception:
                     continue
 
@@ -270,21 +296,23 @@ def processar_uma_pesquisa(ctx, main_page, categoria_nome, url_info, vagas_ja_in
 
         except Exception as e:
             print(f"  [Indeed] Error on page {page_num + 1} for '{categoria_nome}': {e}")
-            # Recovery: close current context and create a fresh one
+            # Attempt driver recovery so subsequent searches still run
             try:
-                ctx.close()
+                driver.quit()
             except Exception:
                 pass
-            ctx, main_page = configurar_contexto()
+            driver = configurar_driver()
+            # Re-warm after restart — fresh driver has no cookies, hitting Indeed
+            # immediately after restart triggers bot detection on the next search.
             try:
-                main_page.goto("https://pt.indeed.com/", wait_until='domcontentloaded', timeout=20000)
+                driver.get("https://pt.indeed.com/")
                 time.sleep(random.uniform(3.0, 5.0))
             except Exception:
                 pass
             break
 
     print(f"  → Finished '{categoria_nome}': {novas_vagas_cont} new jobs indexed.")
-    return novas_vagas_cont, ctx, main_page
+    return novas_vagas_cont, driver
 
 def iniciar_scraper_indeed():
     print(f"\n{'='*50}")
@@ -292,14 +320,14 @@ def iniciar_scraper_indeed():
     print(f"  Searches: {len(PESQUISAS)} | Max Pages/Search: {MAX_PAGES}")
     print(f"{'='*50}")
 
-    ctx = None
-    main_page = None
+    driver = None
     try:
-        ctx, main_page = configurar_contexto()
+        driver = configurar_driver()
 
-        # Warm-up — establish session cookies before scraping
+        # Single warm-up visit before all searches (reduces bot detection without
+        # paying the 3-5s penalty on every individual search category).
         try:
-            main_page.goto("https://pt.indeed.com/", wait_until='domcontentloaded', timeout=20000)
+            driver.get("https://pt.indeed.com/")
             time.sleep(random.uniform(3.0, 5.0))
         except Exception:
             pass
@@ -307,7 +335,9 @@ def iniciar_scraper_indeed():
         total_novas = 0
         consecutive_zeros = 0
         for cat_nome, cat_url in PESQUISAS.items():
-            novas, ctx, main_page = processar_uma_pesquisa(ctx, main_page, cat_nome, cat_url, total_novas)
+            # processar_uma_pesquisa may restart the driver on Chrome crash;
+            # re-bind here so subsequent searches use the new instance.
+            novas, driver = processar_uma_pesquisa(driver, cat_nome, cat_url, total_novas)
             total_novas += novas
 
             # Track consecutive zero-yield searches. When Indeed is blocking us,
@@ -329,12 +359,12 @@ def iniciar_scraper_indeed():
         print(f"{'='*50}")
 
     finally:
-        if ctx:
-            try:
-                ctx.close()
-                print("  Playwright context closed.")
-            except Exception:
-                pass
+        if driver:
+            driver.quit()
+            print("  Selenium driver closed.")
+            tmp_dir = getattr(driver, '_tmp_profile_dir', None)
+            if tmp_dir and os.path.exists(tmp_dir):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
 if __name__ == '__main__':
     iniciar_scraper_indeed()

@@ -44,17 +44,20 @@ Thumbs.db
 .DS_Store
 .gemini/
 
-# Scripts temporários e de debug
-get_url.py
-inspect_db.py
-test_*.py
-seed_*.py
-fix_*.py
-debug_*.py
+# Scripts temporários e de debug (apenas na raiz do repositório)
+/get_url.py
+/inspect_db.py
+/test_*.py
+/seed_*.py
+/fix_*.py
+/debug_*.py
 scratch/
 
 # Documentação descartada
 CLOUDFLARE_FIXED_DOMAIN_GUIDE.md
+
+# Pytest cache
+.pytest_cache/
 
 # Claude Code — configurações locais e worktrees de sessão
 .claude/settings.local.json

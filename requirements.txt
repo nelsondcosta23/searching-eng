@@ -27,3 +27,8 @@ prometheus-client==0.22.1
 urllib3>=2.7.0
 pillow>=12.2.0
 python-dotenv>=1.2.2
+# Testing
+pytest==8.3.5
+httpx==0.28.1
+# Linting
+ruff==0.9.10

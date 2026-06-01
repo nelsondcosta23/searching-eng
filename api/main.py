@@ -33,6 +33,17 @@ def _day_range(date_str: str) -> Tuple[str, str]:
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 API_KEY  = os.environ.get('API_KEY', '').strip()
 
+# Multi-key support: API_KEYS overrides API_KEY when set.
+# Comma-separated list of valid bearer tokens — enables zero-downtime rotation.
+# Falls back to API_KEY for backward compatibility.
+def _load_api_keys() -> frozenset:
+    raw = os.environ.get('API_KEYS', '').strip()
+    if raw:
+        return frozenset(k.strip() for k in raw.split(',') if k.strip())
+    return frozenset([API_KEY]) if API_KEY else frozenset()
+
+_API_KEYS: frozenset = _load_api_keys()
+
 # Optional per-user authorization scope.
 # When set: /users/sync, GET /jobs, GET /stats, GET /jobs/{id} all reject any
 # request targeting a different user_id. Without it, any API_KEY holder can
@@ -112,16 +123,22 @@ def _is_blocked(ip: str) -> bool:
 
 
 def _startup_checks():
-    if API_KEY in _INSECURE_DEFAULTS:
+    if not _API_KEYS or all(k in _INSECURE_DEFAULTS for k in _API_KEYS):
         print(
-            "[API] FATAL: API_KEY is not set or uses an insecure default value. "
-            "Set a strong random API_KEY in .env and restart.",
+            "[API] FATAL: No valid API key configured. "
+            "Set API_KEY (single key) or API_KEYS (comma-separated) in .env and restart.",
             flush=True,
         )
         sys.exit(1)
+    insecure = [k for k in _API_KEYS if k in _INSECURE_DEFAULTS]
+    if insecure:
+        print(
+            f"[API] WARNING: {len(insecure)} of {len(_API_KEYS)} configured key(s) use insecure defaults.",
+            flush=True,
+        )
     _init_rate_limiter()
     _init_monitoring()
-    _log.info('api_startup', version='2.1.0', db_path=DB_PATH)
+    _log.info('api_startup', version='2.1.0', db_path=DB_PATH, num_keys=len(_API_KEYS))
 
 
 app = FastAPI(
@@ -279,7 +296,7 @@ def verify_api_key(
             headers={"Retry-After": str(_RATE_WINDOW)},
         )
 
-    if credentials and _safe_compare(credentials.credentials, API_KEY):
+    if credentials and any(_safe_compare(credentials.credentials, k) for k in _API_KEYS):
         return credentials.credentials
 
     # Record the failure (and re-check threshold in one atomic step).
@@ -434,8 +451,27 @@ class UserProfile(BaseModel):
 def _get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")       # safe with WAL; ~2× faster commits
+    conn.execute("PRAGMA cache_size=-8000;")         # 8 MB page cache
+    conn.execute("PRAGMA mmap_size=134217728;")      # 128 MB memory-mapped I/O
+    conn.execute("PRAGMA temp_store=MEMORY;")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _audit(event: str, user_id: str = '', ip: str = '', detail: str = '') -> None:
+    """Append one row to audit_log (best-effort; never raises)."""
+    try:
+        with contextlib.closing(sqlite3.connect(DB_PATH, timeout=5)) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute(
+                "INSERT INTO audit_log (event, user_id, ip, detail) VALUES (?, ?, ?, ?)",
+                (event, user_id or '', ip or '', detail or ''),
+            )
+            conn.commit()
+    except Exception:
+        pass
+
 
 def _db_exists():
     return os.path.exists(DB_PATH)
@@ -808,7 +844,7 @@ def list_job_profiles(api_key: str = Depends(verify_api_key)):
 
 
 @app.post("/api/v1/users/sync", tags=["Users"])
-def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_key)):
+def sync_user_profile(profile: UserProfile, request: Request, api_key: str = Depends(verify_api_key)):
     """Upsert user scraping profile preferences.
 
     If `OWNER_USER_ID` env is set, only that exact user_id may be modified.
@@ -959,12 +995,15 @@ def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_ke
     except Exception as _pb_err:
         print(f"[sync] PocketBase mirror failed (non-fatal): {_pb_err}")
 
+    _audit('user_sync', profile.user_id, _get_client_ip(request),
+           f"job_profile={job_profile_norm} is_active={profile.is_active}")
     return {"status": "success", "message": f"Profile for {profile.user_id} updated successfully."}
 
 
 @app.delete("/api/v1/users/{user_id}", tags=["Users"])
 def delete_user(
     user_id: str,
+    request: Request,
     api_key: str = Depends(verify_api_key),
 ):
     """Permanently delete a user profile and all associated job data.
@@ -999,6 +1038,7 @@ def delete_user(
         print(f"[delete_user] PocketBase erasure failed (non-fatal): {pb_err}")
 
     _log.info('user_deleted', user_id=user_id, gdpr_article=17)
+    _audit('user_delete', user_id, _get_client_ip(request), 'GDPR Art.17 erasure')
     return {
         "status": "deleted",
         "user_id": user_id,

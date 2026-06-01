@@ -65,11 +65,11 @@ def verify_active_jobs():
         if VERIFIER_SKIP_RECENT_DAYS > 0:
             cutoff_clause = "AND (data_ultima_verificacao IS NULL OR data_ultima_verificacao < datetime('now', ?))"
             _cur = _conn.execute(
-                f"SELECT id, link, plataforma, titulo FROM jobs_global WHERE status IN ('Ativa', 'Inacessível') {cutoff_clause}",
+                f"SELECT id, link, plataforma, titulo FROM vagas WHERE status IN ('Ativa', 'Inacessível') {cutoff_clause}",
                 (f'-{VERIFIER_SKIP_RECENT_DAYS} days',),
             )
         else:
-            _cur = _conn.execute("SELECT id, link, plataforma, titulo FROM jobs_global WHERE status IN ('Ativa', 'Inacessível')")
+            _cur = _conn.execute("SELECT id, link, plataforma, titulo FROM vagas WHERE status IN ('Ativa', 'Inacessível')")
         jobs = _cur.fetchall()
     # _conn is closed here — every UPDATE below uses execute_with_retry().
 
@@ -83,7 +83,7 @@ def verify_active_jobs():
     def _mark_expired(job_id, link, ts):
         # WHERE guard: don't overwrite if another process already changed status.
         execute_with_retry(
-            "UPDATE jobs_global SET status = 'Expirada', data_ultima_verificacao = ? "
+            "UPDATE vagas SET status = 'Expirada', data_ultima_verificacao = ? "
             "WHERE id = ? AND status IN ('Ativa', 'Inacessível')",
             (ts, job_id),
         )
@@ -96,7 +96,7 @@ def verify_active_jobs():
     def _mark_verified(job_id, ts):
         # Only update timestamp — don't touch status (may already be 'Expirada').
         execute_with_retry(
-            "UPDATE jobs_global SET data_ultima_verificacao = ? "
+            "UPDATE vagas SET data_ultima_verificacao = ? "
             "WHERE id = ? AND status IN ('Ativa', 'Inacessível')",
             (ts, job_id),
         )
@@ -104,7 +104,7 @@ def verify_active_jobs():
     def _mark_inacessivel(job_id, ts):
         # Network failure — only mark if still active (don't revert 'Expirada').
         execute_with_retry(
-            "UPDATE jobs_global SET status = 'Inacessível', data_ultima_verificacao = ? "
+            "UPDATE vagas SET status = 'Inacessível', data_ultima_verificacao = ? "
             "WHERE id = ? AND status = 'Ativa'",
             (ts, job_id),
         )

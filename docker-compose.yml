@@ -138,7 +138,7 @@ services:
     # cron via /etc/environment (PAM-loaded by `service cron start`).
     # Only app-relevant vars are written (not PATH, HOME, etc.) and the file
     # is restricted to root-only (chmod 600) so other processes can't read secrets.
-    command: bash -c "env | grep -E '^(DB_PATH|API_KEY|TARGET_USER_ID|OWNER_USER_ID|RESEND_API_KEY|EMAIL_|EXTERNAL_WEBHOOK_SECRET|ALLOW_HTTP_CALLBACKS|WEBHOOK_|MAX_JOBS_|DIAS_RETENCAO|ITJOBS_|PB_|SUPABASE_|REDIS_URL|SCRAPERS_|UVICORN_|VALID_JOB_|VERIFIER_|TUNNEL_UPDATE_|CLOUDFLARE_TUNNEL_|SENTRY_|DISPLAY|PYTHONUNBUFFERED|MIN_TIER_YIELD|INDEED_|EXPRESSO_|LINKEDIN_|SAPO_)' > /etc/environment && chmod 600 /etc/environment && service cron start && tail -f /dev/null"
+    command: bash -c "env | grep -E '^(DB_PATH|API_KEY|TARGET_USER_ID|OWNER_USER_ID|RESEND_API_KEY|EMAIL_|EXTERNAL_WEBHOOK_SECRET|ALLOW_HTTP_CALLBACKS|WEBHOOK_|MAX_JOBS_|DIAS_RETENCAO|ITJOBS_|PB_|SUPABASE_|REDIS_URL|SCRAPERS_|UVICORN_|VALID_JOB_|VERIFIER_|TUNNEL_UPDATE_|CLOUDFLARE_TUNNEL_|SENTRY_|DISPLAY|PYTHONUNBUFFERED|MIN_TIER_YIELD|PIPELINE_MODE|YIELD_ALERT_THRESHOLD|YIELD_MIN_BASELINE|DASHBOARD_PASSWORD|DASHBOARD_DATA_SOURCE|INDEED_|EXPRESSO_|LINKEDIN_|SAPO_)' > /etc/environment && chmod 600 /etc/environment && service cron start && tail -f /dev/null"
     healthcheck:
       test: ["CMD", "pgrep", "cron"]
       interval: 60s

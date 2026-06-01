@@ -1,12 +1,7 @@
 import os
 import json
 import sqlite3
-import urllib.request
 import urllib.parse
-import time
-from urllib.error import URLError
-
-PROFILE_URL = "https://jysdacsaobjulyzyzsdj.supabase.co/functions/v1/job-search-profile"
 
 # Path to the local SQLite database
 _DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
@@ -23,10 +18,8 @@ _CITY_TO_COUNTRY = {
     "Paris": "France", "Lyon": "France",
 }
 
-# Global cache — 1 HTTP call per orchestration run
+# Global cache — 1 PocketBase call per orchestration run
 _PROFILE_CACHE = None
-CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tmp', 'profile_cache.json')
-CACHE_TTL = 300  # 5 min — profile changes propagate quickly after /users/sync
 
 # Per-user local profile cache — avoids redundant SQLite reads within the
 # same process (scorer alone calls get_local_profile 7+ times per run).
@@ -36,57 +29,79 @@ CACHE_TTL = 300  # 5 min — profile changes propagate quickly after /users/sync
 _LOCAL_PROFILE_CACHE: dict = {}
 
 
+def _pb_record_to_raw_profile(record: dict) -> dict:
+    """Convert a flat PocketBase user_profiles record to the canonical strategy dict."""
+    def _split(s):
+        return [x.strip().lower() for x in (s or '').split(',') if x.strip()]
+
+    local_like = {
+        'user_id':            record.get('user_id'),
+        'keywords':           _split(record.get('keywords')),
+        'negative_keywords':  _split(record.get('negative_keywords')),
+        'job_titles':         _split(record.get('job_titles')),
+        'locations':          record.get('locations') or 'Portugal',
+        'is_remote':          bool(record.get('is_remote')),
+        'min_salary':         int(record.get('min_salary') or 0),
+        'experience_levels':  _split(record.get('experience_levels')),
+        'search_description': (record.get('search_description') or '').strip(),
+    }
+    queries = _build_local_queries(local_like)
+    return {
+        'user_id': record.get('user_id'),
+        'job_search_strategy': {
+            'queries': queries,
+            'filters': {
+                'negative_keywords': local_like['negative_keywords'],
+                'seniority_level':   local_like['experience_levels'],
+                'min_salary':        local_like['min_salary'],
+            },
+            'search_description': local_like['search_description'],
+        },
+    }
+
+
+def _get_pb_raw_profile(user_id=None) -> dict:
+    """Try PocketBase as profile source. Returns canonical strategy dict or {} on failure/unavailable."""
+    try:
+        from automation.pb_client import get_client
+        pb = get_client()
+        if not pb.is_available():
+            return {}
+        if user_id:
+            record = pb.get_profile(user_id)
+        else:
+            records = pb.list_profiles()
+            record = next((r for r in records if r.get('is_active')), None)
+        if not record:
+            return {}
+        return _pb_record_to_raw_profile(record)
+    except Exception as e:
+        print(f'[profile_fetcher] PocketBase profile error: {e}')
+        return {}
+
+
 def get_raw_profile():
-    """Fetches the job search profile from the Supabase Edge Function with file caching."""
+    """Fetches the job search profile.
+
+    Source priority:
+      1. Memory cache
+      2. PocketBase (primary source when PB_URL + credentials are configured)
+      3. Empty dict — all callers fall back to local SQLite via get_local_profile()
+    """
     global _PROFILE_CACHE
-    
-    # 1. Check memory cache
+
+    # 1. Memory cache — one PocketBase call per orchestration process lifetime
     if _PROFILE_CACHE:
         return _PROFILE_CACHE
-        
-    # 2. Check file cache
-    if os.path.exists(CACHE_FILE):
-        try:
-            mtime = os.path.getmtime(CACHE_FILE)
-            if time.time() - mtime < CACHE_TTL:
-                with open(CACHE_FILE, 'r') as f:
-                    _PROFILE_CACHE = json.load(f)
-                    # print(f"[profile_fetcher] Profile loaded from file cache.")
-                    return _PROFILE_CACHE
-        except Exception as e:
-            print(f"[profile_fetcher] Error reading cache file: {e}")
 
-    # 3. Fetch from API
-    try:
-        req = urllib.request.Request(PROFILE_URL, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=30) as response:
-            if response.status == 200:
-                content = response.read().decode('utf-8')
-                _PROFILE_CACHE = json.loads(content)
-                
-                # Save to file cache
-                try:
-                    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-                    with open(CACHE_FILE, 'w') as f:
-                        f.write(content)
-                except Exception as e:
-                    print(f"[profile_fetcher] Error saving cache file: {e}")
-                
-                print(f"[profile_fetcher] Profile loaded from API. user_id={_PROFILE_CACHE.get('user_id', 'N/A')}")
-                return _PROFILE_CACHE
-    except Exception as e:
-        print(f"[profile_fetcher] API Error: {e}")
-        
-    # 4. Fallback to expired cache if API fails
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, 'r') as f:
-                _PROFILE_CACHE = json.load(f)
-                print(f"[profile_fetcher] API failed. Using expired file cache.")
-                return _PROFILE_CACHE
-        except Exception:
-            pass
+    # 2. PocketBase
+    pb_profile = _get_pb_raw_profile()
+    if pb_profile:
+        _PROFILE_CACHE = pb_profile
+        print(f"[profile_fetcher] Profile loaded from PocketBase. user_id={pb_profile.get('user_id', 'N/A')}")
+        return _PROFILE_CACHE
 
+    # 3. PocketBase unavailable — callers fall back to local SQLite
     return {}
 
 
@@ -180,12 +195,11 @@ def _get_strategy():
 
 
 def _api_strategy_is_empty() -> bool:
-    """True when the upstream Supabase profile is unavailable or empty.
+    """True when the PocketBase profile is unavailable or has no queries.
 
-    Used to trigger a local-DB fallback consistently across getters when the
-    Edge Function is down (e.g. returning 404). Without this, the API path
-    returned silently empty data while the local users_perfil table held
-    valid info.
+    Used to trigger a local-DB fallback consistently across getters when
+    PocketBase is down or unconfigured. Without this, the API path returned
+    silently empty data while the local users_perfil table held valid info.
     """
     s = _get_strategy()
     if not s:
@@ -343,7 +357,7 @@ def _get_all_queries():
 
     Priority:
       1. TARGET_USER_ID env  → generated from local users_perfil for that uid.
-      2. API strategy queries → if upstream Supabase has them.
+      2. API strategy queries → if PocketBase profile has them.
       3. Local fallback     → first active users_perfil row (when API is down).
     """
     target_uid = os.environ.get('TARGET_USER_ID')
@@ -515,6 +529,25 @@ def generate_linkedin_urls(priority_only=False, standard_only=False):
     return urls
 
 
+_INDEED_DOMAIN_MAP = {
+    'united kingdom': 'uk.indeed.com',
+    'england':        'uk.indeed.com',
+    'london':         'uk.indeed.com',
+    'ireland':        'ie.indeed.com',
+    'germany':        'de.indeed.com',
+    'france':         'fr.indeed.com',
+    'spain':          'es.indeed.com',
+    'netherlands':    'www.indeed.nl',
+}
+
+def _indeed_domain(loc: str) -> str:
+    loc_lower = loc.lower()
+    for key, domain in _INDEED_DOMAIN_MAP.items():
+        if key in loc_lower:
+            return domain
+    return 'pt.indeed.com'
+
+
 def generate_indeed_urls(priority_only=False, standard_only=False):
     if priority_only:
         queries = get_priority_queries()
@@ -530,13 +563,14 @@ def generate_indeed_urls(priority_only=False, standard_only=False):
         clean_name = _clean_role_name(q.get('search_string', ''))
         key = f"{'★ ' if is_prio else ''}Indeed: {clean_name} - {loc}"
 
+        domain = _indeed_domain(loc)
         q_role = urllib.parse.quote(q.get('search_string', ''))
         q_loc  = urllib.parse.quote(loc)
 
         if q.get('remote_only'):
-            url = f"https://pt.indeed.com/jobs?q={q_role}&l={q_loc}&sc=0kf%3Aattr%28DSQF7%29%3B&fromage=1"
+            url = f"https://{domain}/jobs?q={q_role}&l={q_loc}&sc=0kf%3Aattr%28DSQF7%29%3B&fromage=1"
         else:
-            url = f"https://pt.indeed.com/jobs?q={q_role}&l={q_loc}&fromage=1"
+            url = f"https://{domain}/jobs?q={q_role}&l={q_loc}&fromage=1"
 
         urls[key] = {'url': url, 'is_priority': is_prio}
     return urls
@@ -556,11 +590,6 @@ def generate_sapo_urls():
     seen_remote = set()
 
     for q in queries:
-        loc = q.get('location', 'Portugal')
-        # Sapo is PT only — only process PT-related queries
-        if loc not in ["Portugal", "Lisboa", "Porto", "Braga", "Aveiro", "Coimbra"]:
-            continue
-
         clean_name = _clean_role_name(q.get('search_string', ''))
         q_role = urllib.parse.quote(q.get('search_string', ''))
 

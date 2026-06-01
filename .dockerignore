@@ -9,6 +9,7 @@ __pycache__/
 *.pyc
 *.pyo
 venv/
+.pytest_cache/
 
 # Base de dados (montada via volume em docker-compose)
 database/*.db
@@ -58,3 +59,18 @@ test_*.py
 seed_*.py
 fix_*.py
 debug_*.py
+
+# Ferramentas de desenvolvimento (não necessárias em produção)
+Makefile
+ruff.toml
+pytest.ini
+.github/
+
+# Suite de testes (não necessária dentro do container)
+tests/
+
+# Selenium backup (apenas para rollback local)
+scrapers/selenium_backup/
+
+# Scripts de migração one-shot (correr no host, não dentro da imagem)
+migration_v7.py

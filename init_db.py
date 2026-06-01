@@ -136,6 +136,84 @@ try:
     conn.commit()
     print("User profile schema successfully initialized!")
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Schema v7 — Global job deduplication
+    # ─────────────────────────────────────────────────────────────────────
+    print("Creating/updating 'jobs_global' table (Schema v7)...")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS jobs_global (
+            id                      INTEGER PRIMARY KEY,
+            link                    TEXT NOT NULL UNIQUE,
+            titulo                  TEXT,
+            empresa                 TEXT,
+            plataforma              TEXT,
+            id_externo              TEXT,
+            localizacao             TEXT,
+            categoria               TEXT,
+            descricao               TEXT,
+            observacoes             TEXT,
+            recrutador_nome         TEXT,
+            recrutador_link         TEXT,
+            salario                 TEXT,
+            tipo_contrato           TEXT,
+            nivel_experiencia       TEXT,
+            data_publicacao         TEXT,
+            data_scraped            TEXT,
+            data_ultima_verificacao TEXT,
+            status                  TEXT DEFAULT 'Ativa'
+        )
+    ''')
+
+    print("Creating/updating 'jobs_users' table (Schema v7)...")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS jobs_users (
+            job_id          INTEGER NOT NULL REFERENCES jobs_global(id),
+            user_id         TEXT    NOT NULL,
+            relevance_score INTEGER,
+            created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (job_id, user_id)
+        )
+    ''')
+
+    # Indexes for hot query paths (scorer, API, webhook)
+    v7_indexes = [
+        ('idx_jg_link',         'CREATE INDEX IF NOT EXISTS idx_jg_link         ON jobs_global(link)'),
+        ('idx_jg_status',       'CREATE INDEX IF NOT EXISTS idx_jg_status       ON jobs_global(status)'),
+        ('idx_jg_data_scraped', 'CREATE INDEX IF NOT EXISTS idx_jg_data_scraped ON jobs_global(data_scraped)'),
+        ('idx_ju_user',         'CREATE INDEX IF NOT EXISTS idx_ju_user         ON jobs_users(user_id)'),
+        ('idx_ju_user_score',   'CREATE INDEX IF NOT EXISTS idx_ju_user_score   ON jobs_users(user_id, relevance_score)'),
+        ('idx_ju_unscored',     'CREATE INDEX IF NOT EXISTS idx_ju_unscored     ON jobs_users(user_id) WHERE relevance_score IS NULL'),
+    ]
+    for name, sql in v7_indexes:
+        cursor.execute(sql)
+        print(f"  ✓  {name}")
+
+    conn.commit()
+    print("Schema v7 (jobs_global + jobs_users) initialized!")
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Schema v8 — Audit log (D-4)
+    # ─────────────────────────────────────────────────────────────────────
+    print("Creating/updating 'audit_log' table (Schema v8)...")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts      TEXT    DEFAULT CURRENT_TIMESTAMP,
+            event   TEXT    NOT NULL,
+            user_id TEXT,
+            ip      TEXT,
+            detail  TEXT
+        )
+    ''')
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_audit_ts      ON audit_log(ts DESC)'
+    )
+    cursor.execute(
+        'CREATE INDEX IF NOT EXISTS idx_audit_user    ON audit_log(user_id)'
+    )
+    conn.commit()
+    print("Schema v8 (audit_log) initialized!")
+
 except sqlite3.Error as e:
     print(f"Error creating database: {e}")
 

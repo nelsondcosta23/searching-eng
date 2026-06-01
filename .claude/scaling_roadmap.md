@@ -66,15 +66,32 @@ docker-compose --profile celery up -d redis celery_selenium celery_api flower
 
 | # | Task | File | Status |
 |---|---|---|---|
-| PB-1 | Add PocketBase service to docker-compose.yml | docker-compose.yml | 🔲 |
-| PB-2 | Design PocketBase collections: `users`, `jobs`, `platforms` | (PB admin UI) | 🔲 |
-| PB-3 | Create `automation/pb_client.py` — PocketBase REST client (auth, upsert jobs, sync profiles) | automation/pb_client.py | 🔲 |
-| PB-4 | Modify `webhook_dispatcher.py` — after dispatch, push top jobs to PocketBase `jobs` collection | automation/webhook_dispatcher.py | 🔲 |
-| PB-5 | Modify `profile_fetcher.py` — add PocketBase as profile source (replaces Supabase Edge Function) | automation/profile_fetcher.py | 🔲 |
-| PB-6 | Update `api/main.py` — proxy profile sync to PocketBase instead of local SQLite | api/main.py | 🔲 |
-| PB-7 | Update `app/job_dashboard.py` — read from PocketBase via REST instead of direct SQLite | app/job_dashboard.py | 🔲 |
-| PB-8 | Migrate existing `users_perfil` rows to PocketBase | migration script | 🔲 |
-| PB-9 | Remove `job_api` FastAPI service once PocketBase covers all endpoints | docker-compose.yml | 🔲 |
+| PB-1 | Add PocketBase service to docker-compose.yml + Dockerfile.pocketbase | docker-compose.yml | ✅ |
+| PB-2 | Design PocketBase collections: `user_profiles`, `job_results` | automation/pb_client.py | ✅ |
+| PB-3 | Create `automation/pb_client.py` — REST client (admin auth, upsert profiles, push jobs) | automation/pb_client.py | ✅ |
+| PB-4 | Modify `webhook_dispatcher.py` — push top jobs to PocketBase `job_results` for ALL users | automation/webhook_dispatcher.py | ✅ |
+| PB-5 | Modify `profile_fetcher.py` — PocketBase replaces Supabase Edge Function as primary source | automation/profile_fetcher.py | ✅ |
+| PB-6 | Update `api/main.py` — mirror profile to PocketBase on POST /users/sync (non-fatal) | api/main.py | ✅ |
+| PB-7 | Update `app/job_dashboard.py` — optional PocketBase source via `DASHBOARD_DATA_SOURCE=pocketbase`; auto-fallback to SQLite when PB unreachable | app/job_dashboard.py | ✅ |
+| PB-8 | Create `automation/pb_setup.py` — migrate existing `users_perfil` rows to PocketBase | automation/pb_setup.py | ✅ |
+| PB-9 | Remove `job_api` FastAPI service — **permanently deferred**: rate limiting, SSRF, audit_log, Prometheus /metrics, multi-key auth and complex JOINs cannot be replicated in PocketBase. Architecture decision: PocketBase = profile/results store; job_api = hardened external REST API. | docker-compose.yml | ❌ N/A |
+
+**First-run instructions:**
+```bash
+# 1. Add to .env:
+PB_URL=http://pocketbase:8090
+PB_ADMIN_EMAIL=admin@searching-eng.local
+PB_ADMIN_PASSWORD=<strong-password>
+
+# 2. Start PocketBase:
+docker-compose up -d pocketbase
+
+# 3. Open admin UI and create admin account:
+#    http://localhost:8090/_/
+
+# 4. Migrate existing users:
+docker exec python_scraper python /app/automation/pb_setup.py
+```
 
 ---
 
@@ -117,14 +134,14 @@ jobs_users (
 
 | # | Task | File | Status |
 |---|---|---|---|
-| GD-1 | Design new schema (jobs_global + jobs_users) | init_db.py | 🔲 |
-| GD-2 | Add `save_job_global()` to db_helper.py — check global first, then insert+associate | automation/db_helper.py | 🔲 |
-| GD-3 | Modify `job_exists()` — check global table by link | automation/db_helper.py | 🔲 |
-| GD-4 | Update scorer — scores go to jobs_users, not vagas | automation/job_scorer.py | 🔲 |
-| GD-5 | Update all scrapers — call `save_job_global()` instead of `save_job()` | all scrapers | 🔲 |
-| GD-6 | Update API queries — JOIN jobs_global + jobs_users | api/main.py | 🔲 |
-| GD-7 | Update dashboard — read from new schema | app/job_dashboard.py | 🔲 |
-| GD-8 | Migration script — convert existing `vagas` to new tables | migration_v7.py | 🔲 |
+| GD-1 | Design new schema (jobs_global + jobs_users) | init_db.py | ✅ |
+| GD-2 | Add `save_job_global()` to db_helper.py — check global first, then insert+associate | automation/db_helper.py | ✅ |
+| GD-3 | Modify `job_exists()` — check global table by link | automation/db_helper.py | ✅ |
+| GD-4 | Update scorer — scores go to jobs_users, not vagas | automation/job_scorer.py | ✅ |
+| GD-5 | Update all scrapers — `save_job()` is now a thin wrapper over `save_job_global()` | all scrapers | ✅ |
+| GD-6 | Update API queries — JOIN jobs_global + jobs_users | api/main.py | ✅ |
+| GD-7 | Update dashboard — read from new schema | app/job_dashboard.py | ✅ |
+| GD-8 | Migration script — convert existing `vagas` to new tables | migration_v7.py | ✅ |
 
 ---
 
@@ -146,14 +163,18 @@ jobs_users (
 
 | # | Task | File | Status |
 |---|---|---|---|
-| BP-1 | Evaluate Browserless vs Playwright — test with LinkedIn and Indeed | — | 🔲 |
-| BP-2 | Add browser service to docker-compose.yml | docker-compose.yml | 🔲 |
-| BP-3 | Rewrite `init_chrome_with_timeout()` in `_shared.py` to use pool connection | scrapers/_shared.py | 🔲 |
-| BP-4 | Update LinkedIn scraper — use CDP/Playwright instead of uc.Chrome | scrapers/linkedin_scraper.py | 🔲 |
-| BP-5 | Update Indeed scraper | scrapers/indeed_scraper.py | 🔲 |
-| BP-6 | Update Sapo scraper | scrapers/sapo_scraper.py | 🔲 |
-| BP-7 | Update Expresso scraper | scrapers/expresso_scraper.py | 🔲 |
-| BP-8 | Remove `undetected-chromedriver` from requirements.txt | requirements.txt | 🔲 |
+| BP-1 | Chose Playwright over Browserless — self-hosted, no extra Docker service | — | ✅ |
+| BP-2 | No extra Docker service needed — Playwright runs inside existing container | docker-compose.yml | ✅ |
+| BP-3 | Add `get_pw_browser()`, `new_pw_context()`, `apply_stealth()` pool to `_shared.py` | scrapers/_shared.py | ✅ |
+| BP-4 | Migrate LinkedIn scraper to Playwright (pool context, no temp dirs) | scrapers/linkedin_scraper.py | ✅ |
+| BP-5 | Migrate Indeed scraper to Playwright | scrapers/indeed_scraper.py | ✅ |
+| BP-6 | Migrate Sapo scraper to Playwright | scrapers/sapo_scraper.py | ✅ |
+| BP-7 | Migrate Expresso scraper to Playwright | scrapers/expresso_scraper.py | ✅ |
+| BP-8 | `undetected-chromedriver` kept in requirements.txt for rollback via selenium_backup/ | requirements.txt | ⏭️ deferred |
+
+**Selenium backup:** `scrapers/selenium_backup/` — original files before migration.
+**Rollback:** copy files back from `selenium_backup/` and revert `requirements.txt`.
+**First run after rebuild:** `docker-compose up -d --build` (triggers `playwright install chromium`).
 
 ---
 
@@ -162,21 +183,34 @@ jobs_users (
 
 | # | Task | File | Status |
 |---|---|---|---|
-| OB-1 | Add Sentry SDK — capture exceptions from scrapers and API | all | 🔲 |
-| OB-2 | Add `structlog` — replace print() with structured JSON logs | all | 🔲 |
-| OB-3 | Prometheus metrics endpoint on job_api — jobs/day, scraper success rates | api/main.py | 🔲 |
-| OB-4 | Grafana dashboard — visualize scraper health, job yield per platform | docker-compose.yml | 🔲 |
-| OB-5 | Celery Flower — already planned in TQ-8, real-time task monitoring | — | 🔲 |
+| OB-1 | Add Sentry SDK — capture exceptions from scrapers and API | automation/monitoring.py | ✅ |
+| OB-2 | Add structured logging — JSON lines via custom _Logger (cron-compatible, no logging module) | automation/monitoring.py | ✅ |
+| OB-3 | Prometheus metrics endpoint on job_api — /metrics, jobs scraped, active, duration, API counters | api/main.py, automation/monitoring.py | ✅ |
+| OB-4 | Grafana dashboard — scraper health, job yield, API requests | config/grafana/, config/prometheus.yml | ✅ |
+| OB-5 | Celery Flower — real-time task monitoring UI on :5555 | docker-compose.yml | ✅ |
+
+---
+
+## Phase 6 — Security & Quality (Phases A–F)
+**Goal:** Harden the API, add observability, remove Supabase, migrate to PocketBase primary, add tests.
+**Status:** ✅ Complete (2026-06-01)
+
+| # | Task | File | Status |
+|---|---|---|---|
+| A | API security hardening (rate limiting, SSRF, CORS, body size) | api/main.py | ✅ |
+| B | Input validation (Pydantic field guards, user_id length) | api/main.py | ✅ |
+| C | Scraper anomaly detection + PIPELINE_MODE env var | automation/scraper_health.py, orchestrator.py | ✅ |
+| D | Supabase removal, Streamlit auth, audit_log table | profile_fetcher.py, job_dashboard.py, init_db.py, api/main.py | ✅ |
+| E | pytest test suite — 104 tests (unit + integration) | tests/ | ✅ |
+| F | SQLite PRAGMA tuning, multiple API keys, GitHub Actions CI, Makefile, ruff | api/main.py, db_helper.py, .github/workflows/, Makefile, ruff.toml | ✅ |
 
 ---
 
 ## Execution order
 
-**Start now:** Phase 1 (Task Queue) — no DB schema changes, self-contained, high impact.
-**After Phase 1:** Phase 2 (PocketBase) — replace API layer while scrapers keep running.
-**After Phase 2:** Phase 3 (Global dedup) — requires new schema, coordinate with PB migration.
-**After Phase 3:** Phase 4 (Browser pool) — independent of DB, pure scraping infrastructure.
-**Continuous:** Phase 5 (Observability) — can add incrementally.
+**All phases complete.** Current status as of 2026-06-01:
+- Phases 1–6: ✅ Done
+- PB-9 (remove job_api): ❌ Permanently deferred — see PB-9 rationale above
 
 ---
 
@@ -187,8 +221,9 @@ Phase 1 (Queue)   →  Phase 3 (Dedup) can run in parallel with Phase 2
 Phase 2 (PB)      →  Phase 3 (Dedup) uses PB as job storage backend
 Phase 3 (Dedup)   →  Phase 4 (Browser) independent, can overlap
 Phase 4 (Browser) →  Phase 5 (Observability) independent
+Phase 6 (Security/Quality) → orthogonal to all above
 ```
 
 ---
 
-*Created: 2026-05-22*
+*Created: 2026-05-22 · Last updated: 2026-06-01*

@@ -67,7 +67,7 @@ _NON_EU_EXCLUDE = re.compile(
     r"thailand|south africa|kenya|nigeria|egypt|morocco|"
     r"usa|united states|canada|australia|new zealand|"
     r"latam|apac|americas|north america|south america)\b"
-    r"|remote\s*[-–—]\s*(us|usa|united\s*states|canada|brazil|brasil|americas|"
+    r"|remote\s*[-–—,]\s*(us|usa|united\s*states|canada|brazil|brasil|americas|"
     r"latam|apac|asia|china|japan|india|philippines)\b",
     re.I,
 )
@@ -78,11 +78,26 @@ _NON_EU_EXCLUDE = re.compile(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _location_passes(location_text: str, filter_regex: str) -> bool:
-    """Returns True if the job's location matches the include filter and is NOT in the non-EU exclusion list."""
+    """Returns True if the location matches the include filter and is NOT in the non-EU exclusion list.
+
+    Handles multi-location strings separated by ';' (e.g. Greenhouse jobs open in
+    several regions at once: "Remote, Canada; Remote, Ireland; Remote, Netherlands; Remote, US").
+    Accepts the job if ANY single location passes — avoids false negatives where a
+    valid EU location is bundled with non-EU ones.
+    """
     if not filter_regex:
         return True
     if not location_text:
         return False
+
+    parts = [p.strip() for p in location_text.split(';') if p.strip()]
+    if len(parts) > 1:
+        return any(
+            re.search(filter_regex, p, re.I) and not _NON_EU_EXCLUDE.search(p)
+            for p in parts
+        )
+
+    # Single location — original logic
     if not re.search(filter_regex, location_text, re.I):
         return False
     if _NON_EU_EXCLUDE.search(location_text):
@@ -91,9 +106,15 @@ def _location_passes(location_text: str, filter_regex: str) -> bool:
 
 
 def _resolve_filter(company: dict, key: str) -> str:
-    """Returns the filter regex for a strategy, falling back to PT/remote defaults."""
+    """Returns the filter regex for a strategy, falling back to PT/remote defaults.
+
+    For remote_company entries, always ensures 'remote' is part of the pattern so that
+    multi-region location strings like 'Remote, Ireland' are caught by the include check.
+    """
     explicit = company.get(key)
     if explicit:
+        if company.get('remote_company') and 'remote' not in explicit.lower():
+            return explicit + '|remote'
         return explicit
     return DEFAULT_REMOTE_FILTER if company.get('remote_company') else DEFAULT_PT_FILTER
 
@@ -119,7 +140,11 @@ def _strategy_greenhouse(company: dict) -> list[dict]:
     for raw in data.get('jobs', []):
         loc_main = (raw.get('location') or {}).get('name', '') or ''
         loc_offices = " ".join((o.get('name', '') for o in (raw.get('offices') or []) if isinstance(o, dict)))
-        loc_combined = f"{loc_main} {loc_offices}".strip()
+        # Avoid "Home based - EMEA Home Based - EMEA" when office name duplicates the location name
+        if loc_offices and loc_offices.lower() in loc_main.lower():
+            loc_combined = loc_main.strip()
+        else:
+            loc_combined = f"{loc_main} {loc_offices}".strip()
 
         if not _location_passes(loc_combined, loc_filter):
             continue

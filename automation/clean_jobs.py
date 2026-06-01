@@ -19,17 +19,21 @@ def clean_old_jobs():
 
     # Read counts (short connection)
     with transaction() as conn:
-        total_before = conn.execute('SELECT COUNT(*) FROM vagas WHERE data_scraped < ?', (limit,)).fetchone()[0]
+        total_before = conn.execute('SELECT COUNT(*) FROM jobs_global WHERE data_scraped < ?', (limit,)).fetchone()[0]
 
     if total_before == 0:
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Cleanup: nothing to delete.")
         return
 
-    # Delete with retry (separate short-lived connection)
-    deleted = execute_with_retry('DELETE FROM vagas WHERE data_scraped < ?', (limit,))
+    # Delete user associations first (no CASCADE on FK), then the global jobs.
+    execute_with_retry(
+        'DELETE FROM jobs_users WHERE job_id IN (SELECT id FROM jobs_global WHERE data_scraped < ?)',
+        (limit,),
+    )
+    deleted = execute_with_retry('DELETE FROM jobs_global WHERE data_scraped < ?', (limit,))
 
     with transaction() as conn:
-        total_after = conn.execute('SELECT COUNT(*) FROM vagas').fetchone()[0]
+        total_after = conn.execute('SELECT COUNT(*) FROM jobs_global').fetchone()[0]
 
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Cleanup finished.")
     print(f"  → {deleted} jobs older than {DIAS_RETENCAO} days removed.")
