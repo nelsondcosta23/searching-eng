@@ -28,6 +28,18 @@ from typing import Optional
 
 BASE_DIR     = os.environ.get('APP_DIR', '/app')
 SCRAPERS_DIR = os.path.join(BASE_DIR, 'scrapers')
+
+sys.path.insert(0, BASE_DIR)
+try:
+    from automation.monitoring import init_all as _init_monitoring, log as _log, capture_exception as _capture_exc, set_active_jobs as _set_active_jobs
+    _init_monitoring()
+except Exception:
+    class _log:  # minimal fallback
+        @staticmethod
+        def info(e, **k): pass
+        @staticmethod
+        def error(e, **k): pass
+    def _capture_exc(exc, ctx=None): pass
 DB_PATH      = os.path.join(BASE_DIR, 'database', 'vagas.db')
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -199,15 +211,31 @@ def count_new_jobs(user_id: str, since: datetime) -> int:
         since_str = since.strftime('%Y-%m-%d %H:%M:%S')
         with sqlite3.connect(DB_PATH, timeout=10) as c:
             return c.execute(
-                'SELECT COUNT(*) FROM vagas WHERE user_id = ? AND data_scraped >= ?',
+                'SELECT COUNT(*) FROM jobs_global jg JOIN jobs_users ju ON jg.id = ju.job_id '
+                'WHERE ju.user_id = ? AND jg.data_scraped >= ?',
                 (user_id, since_str)
             ).fetchone()[0]
     except Exception:
         return 0
 
 
+def _count_global_since(platform_prefix: str, since: datetime) -> int:
+    """Jobs added to jobs_global for a platform since a given datetime."""
+    try:
+        since_str = since.strftime('%Y-%m-%d %H:%M:%S')
+        with sqlite3.connect(DB_PATH, timeout=10) as c:
+            return c.execute(
+                'SELECT COUNT(*) FROM jobs_global WHERE plataforma LIKE ? AND data_scraped >= ?',
+                (f'{platform_prefix}%', since_str),
+            ).fetchone()[0]
+    except Exception:
+        return -1
+
+
 def run_scraper(name: str, filename: str) -> tuple[str, bool, int]:
     """Runs a single scraper subprocess. Returns (name, success, duration_s)."""
+    from automation.run_logger import log_run
+
     path    = os.path.join(SCRAPERS_DIR, filename)
     timeout = SCRAPER_REGISTRY.get(filename, {}).get('timeout', 1800)
     t_start = datetime.now()
@@ -220,6 +248,9 @@ def run_scraper(name: str, filename: str) -> tuple[str, bool, int]:
     if 'DISPLAY' not in env:
         env['DISPLAY'] = ':99'
 
+    success  = False
+    duration = 0
+    notes    = ''
     try:
         result = subprocess.run(
             [sys.executable, path],
@@ -230,20 +261,25 @@ def run_scraper(name: str, filename: str) -> tuple[str, bool, int]:
             print(result.stdout)
         if result.stderr:
             print(f'[STDERR — {name}]\n{result.stderr}', file=sys.stderr)
+            notes = result.stderr.strip()[:200]
 
         duration = int((datetime.now() - t_start).total_seconds())
         success  = result.returncode == 0
         print(f"{'✅' if success else '❌'} {name}: {'OK' if success else f'Error ({result.returncode})'} — {duration}s")
-        return name, success, duration
 
     except subprocess.TimeoutExpired:
         duration = int((datetime.now() - t_start).total_seconds())
-        print(f'❌ {name}: Killed — exceeded {timeout}s timeout.')
-        return name, False, duration
+        notes    = f'Killed — exceeded {timeout}s timeout'
+        print(f'❌ {name}: {notes}')
     except Exception as e:
         duration = int((datetime.now() - t_start).total_seconds())
+        notes    = str(e)[:200]
         print(f'❌ {name}: Unexpected error — {e}')
-        return name, False, duration
+
+    jobs_added = _count_global_since(name, t_start)
+    log_run(name, jobs_added=jobs_added, success=success, duration_s=duration, notes=notes)
+
+    return name, success, duration
 
 
 def run_sequential(scrapers: list) -> dict:
@@ -310,8 +346,9 @@ def _check_zero_yield(results: dict, user_id: str, run_start: datetime):
         since_str = run_start.strftime('%Y-%m-%d %H:%M:%S')
         with sqlite3.connect(DB_PATH, timeout=10) as c:
             rows = c.execute(
-                'SELECT plataforma, COUNT(*) FROM vagas '
-                'WHERE user_id=? AND data_scraped>=? GROUP BY plataforma',
+                'SELECT jg.plataforma, COUNT(*) FROM jobs_global jg '
+                'JOIN jobs_users ju ON jg.id = ju.job_id '
+                'WHERE ju.user_id=? AND jg.data_scraped>=? GROUP BY jg.plataforma',
                 (user_id, since_str)
             ).fetchall()
         by_plat = {r[0]: r[1] for r in rows}
@@ -523,6 +560,17 @@ def _run_direct_mode():
             try:
                 results = run_for_user(uid, profile)
                 all_user_results[uid] = results
+
+                # B-5: update Prometheus gauge with current active-jobs count
+                try:
+                    import sqlite3 as _sq
+                    with _sq.connect(DB_PATH, timeout=5) as _mc:
+                        _cnt = _mc.execute(
+                            "SELECT COUNT(*) FROM jobs_users WHERE user_id=?", (uid,)
+                        ).fetchone()[0]
+                    _set_active_jobs(uid, _cnt)
+                except Exception:
+                    pass
             finally:
                 _release_user_lock(user_lock)
 

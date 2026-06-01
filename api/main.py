@@ -1,5 +1,5 @@
-"""Job Search Results API — v2.0"""
-from fastapi import FastAPI, Query, HTTPException, Depends, Security, Request
+"""Job Search Results API — v2.1"""
+from fastapi import FastAPI, Query, HTTPException, Depends, Security, Request, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
@@ -9,10 +9,16 @@ import json
 import hmac
 import socket
 import ipaddress
+import time
+from collections import defaultdict
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from automation.monitoring import init_all as _init_monitoring, generate_metrics_response, log as _log
 
 
 def _day_range(date_str: str) -> Tuple[str, str]:
@@ -39,15 +45,83 @@ CALLBACK_URL_MAX_LEN = 2048
 
 _INSECURE_DEFAULTS = {'changeme-please', 'change-me', 'secret', 'api_key', ''}
 
+# Serve /docs and /redoc only when explicitly enabled (off by default in production).
+ENABLE_API_DOCS = os.environ.get('ENABLE_API_DOCS', '0') == '1'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Brute-force protection — tracks auth failures per client IP
+# Redis-backed when REDIS_URL is set; falls back to in-process memory.
+# Note: in-memory state is not shared across uvicorn workers (--workers > 1).
+# ─────────────────────────────────────────────────────────────────────────────
+_RATE_WINDOW    = int(os.environ.get('RATE_LIMIT_WINDOW',    '60'))   # seconds
+_RATE_MAX_FAILS = int(os.environ.get('RATE_LIMIT_MAX_FAILS', '10'))   # failures per window
+
+_redis_rl: object = None           # redis.Redis instance if available
+_mem_fails: dict  = defaultdict(list)  # ip → [monotonic timestamp, ...]
+
+
+def _init_rate_limiter() -> None:
+    global _redis_rl
+    redis_url = os.environ.get('REDIS_URL', '').strip()
+    if not redis_url:
+        return
+    try:
+        import redis as _r
+        _redis_rl = _r.from_url(redis_url, socket_connect_timeout=1, socket_timeout=1)
+        _redis_rl.ping()
+    except Exception:
+        _redis_rl = None
+
+
+def _get_client_ip(request: Request) -> str:
+    xff = request.headers.get('x-forwarded-for', '')
+    if xff:
+        return xff.split(',')[0].strip()
+    return getattr(request.client, 'host', 'unknown')
+
+
+def _record_and_check(ip: str) -> bool:
+    """Records one auth failure and returns True if the IP is now blocked."""
+    if _redis_rl is not None:
+        try:
+            key = f"auth_fail:{ip}"
+            pipe = _redis_rl.pipeline()
+            pipe.incr(key)
+            pipe.expire(key, _RATE_WINDOW)
+            count, _ = pipe.execute()
+            return int(count) > _RATE_MAX_FAILS
+        except Exception:
+            pass
+    now = time.monotonic()
+    _mem_fails[ip] = [t for t in _mem_fails[ip] if now - t < _RATE_WINDOW]
+    _mem_fails[ip].append(now)
+    return len(_mem_fails[ip]) > _RATE_MAX_FAILS
+
+
+def _is_blocked(ip: str) -> bool:
+    """Returns True if the IP has already exceeded the failure threshold."""
+    if _redis_rl is not None:
+        try:
+            count = _redis_rl.get(f"auth_fail:{ip}")
+            return int(count or 0) > _RATE_MAX_FAILS
+        except Exception:
+            pass
+    now = time.monotonic()
+    recent = [t for t in _mem_fails.get(ip, []) if now - t < _RATE_WINDOW]
+    return len(recent) > _RATE_MAX_FAILS
+
+
 def _startup_checks():
     if API_KEY in _INSECURE_DEFAULTS:
-        import sys
         print(
             "[API] FATAL: API_KEY is not set or uses an insecure default value. "
             "Set a strong random API_KEY in .env and restart.",
             flush=True,
         )
         sys.exit(1)
+    _init_rate_limiter()
+    _init_monitoring()
+    _log.info('api_startup', version='2.1.0', db_path=DB_PATH)
 
 
 app = FastAPI(
@@ -56,9 +130,12 @@ app = FastAPI(
     description=(
         "Access scraped job results per user_id.\n\n"
         "Populated automatically by the scraper engine (Expresso, Sapo, Net-Empregos, Indeed, LinkedIn).\n\n"
-        "**Auth**: Send `Authorization: Bearer <API_KEY>` header (preferred) or `?api_key=<API_KEY>` query param (deprecated — leaks into access logs)."
+        "**Auth**: Send `Authorization: Bearer <API_KEY>` header."
     ),
     version="2.1.0",
+    docs_url="/docs"        if ENABLE_API_DOCS else None,
+    redoc_url="/redoc"      if ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if ENABLE_API_DOCS else None,
 )
 
 # CORS — allow external apps (React dashboards, N8N, Zapier, etc.)
@@ -72,6 +149,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Body-size guard — reject oversized requests before they hit route handlers.
+# Prevents DoS via huge payloads (e.g. 10 MB job_titles arrays).
+# ─────────────────────────────────────────────────────────────────────────────
+_MAX_BODY_BYTES = int(os.environ.get('MAX_REQUEST_BODY_BYTES', str(1 * 1024 * 1024)))  # 1 MB default
+
+
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    cl = request.headers.get("content-length")
+    if cl:
+        try:
+            if int(cl) > _MAX_BODY_BYTES:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": f"Request body too large (max {_MAX_BODY_BYTES // 1024} KB)."},
+                )
+        except ValueError:
+            pass
+    return await call_next(request)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -170,21 +269,31 @@ def verify_api_key(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
 ):
-    # Prefer the Authorization: Bearer header
+    ip = _get_client_ip(request)
+
+    # Reject immediately if IP is already over the failure threshold.
+    if _is_blocked(ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many authentication failures. Try again later.",
+            headers={"Retry-After": str(_RATE_WINDOW)},
+        )
+
     if credentials and _safe_compare(credentials.credentials, API_KEY):
         return credentials.credentials
-    # Legacy fallback: ?api_key=...  (kept for backwards compatibility but
-    # strongly discouraged because the key ends up in access logs / Referer.)
-    key_from_query = request.query_params.get('api_key')
-    if key_from_query and _safe_compare(key_from_query, API_KEY):
-        try:
-            print(f"[API] DEPRECATED: api_key passed via query string from {request.client.host if request.client else '?'} (key={_mask_key(key_from_query)}). Use the Authorization header instead.")
-        except Exception:
-            pass
-        return key_from_query
+
+    # Record the failure (and re-check threshold in one atomic step).
+    blocked = _record_and_check(ip)
+    _log.warning('auth_failure', ip=ip, blocked=blocked)
+    if blocked:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many authentication failures. Try again later.",
+            headers={"Retry-After": str(_RATE_WINDOW)},
+        )
     raise HTTPException(
         status_code=401,
-        detail="Invalid or missing API key. Send via 'Authorization: Bearer <key>' header (preferred) or '?api_key=<key>'.",
+        detail="Invalid or missing API key. Send via 'Authorization: Bearer <key>' header.",
     )
 
 
@@ -288,6 +397,36 @@ class UserProfile(BaseModel):
     If omitted, the existing value in the DB is preserved (no overwrite)."""
     callback_url: Optional[str] = None
 
+    # ── B-4: field-level size guards ─────────────────────────────────────────
+    # Prevent individual items or lists that are unreasonably large from
+    # reaching SQLite or the TF-IDF scorer.  Truncation (not rejection) keeps
+    # client integrations working with minor overflows.
+
+    @field_validator(
+        'job_titles', 'keywords', 'negative_keywords', 'negative_companies',
+        'locations', 'experience_levels', 'contract_type', 'required_languages',
+        mode='before',
+    )
+    @classmethod
+    def _cap_list(cls, v):
+        """Truncate individual items to 300 chars; cap lists at 200 items."""
+        if not v:
+            return v
+        return [str(item)[:300] for item in v][:200]
+
+    @field_validator('search_description', mode='before')
+    @classmethod
+    def _cap_description(cls, v):
+        """Cap the free-text description at 5 000 chars (well above TF-IDF needs)."""
+        return str(v)[:5000] if v else v
+
+    @field_validator('user_id', mode='before')
+    @classmethod
+    def _validate_user_id(cls, v):
+        if len(str(v)) > 128:
+            raise ValueError('user_id exceeds maximum length of 128 characters.')
+        return v
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DB Helpers
@@ -300,6 +439,86 @@ def _get_conn():
 
 def _db_exists():
     return os.path.exists(DB_PATH)
+
+
+def _pb_available() -> bool:
+    try:
+        from automation.pb_client import get_client
+        return get_client().is_available()
+    except Exception:
+        return False
+
+
+def get_jobs_from_pb(
+    user_id: str,
+    status: Optional[str],
+    platform: Optional[str],
+    limit: int,
+    run_date: Optional[str],
+    salario_only: bool,
+    nivel: Optional[str],
+    sort_by_relevance: bool,
+    min_score: Optional[int],
+) -> Optional[List[dict]]:
+    """Read jobs from PocketBase job_results collection. Returns None on any failure."""
+    try:
+        from automation.pb_client import get_client
+        pb = get_client()
+
+        parts = [f'(user_id="{user_id}")']
+        if status:
+            parts.append(f'status="{status}"')
+        if platform:
+            parts.append(f'plataforma~"{platform}"')
+        if salario_only:
+            parts.append('salario!=""')
+        if nivel:
+            parts.append(f'nivel_experiencia~"{nivel}"')
+        if min_score is not None:
+            parts.append(f'relevance_score>={min_score}')
+        if run_date:
+            day_start, day_end = _day_range(run_date)
+            parts.append(f'data_scraped>="{day_start}"')
+            parts.append(f'data_scraped<"{day_end}"')
+
+        pb_filter = '&&'.join(f'({p})' for p in parts)
+        sort = '-relevance_score,data_scraped' if sort_by_relevance else '-data_scraped,-relevance_score'
+
+        r = pb._req(
+            'GET', '/api/collections/job_results/records',
+            params={'filter': pb_filter, 'sort': sort, 'perPage': limit},
+        )
+        if r is None or r.status_code != 200:
+            return None
+
+        items = r.json().get('items', [])
+        # Normalise to same shape as SQLite result (add missing integer id as None)
+        result = []
+        for item in items:
+            result.append({
+                'id':                  None,
+                'user_id':             item.get('user_id'),
+                'titulo':              item.get('titulo'),
+                'empresa':             item.get('empresa'),
+                'localizacao':         item.get('localizacao'),
+                'plataforma':          item.get('plataforma'),
+                'categoria':           item.get('categoria'),
+                'link':                item.get('link'),
+                'data_publicacao':     item.get('data_publicacao'),
+                'data_scraped':        item.get('data_scraped'),
+                'status':              item.get('status'),
+                'descricao_completa':  item.get('descricao_completa'),
+                'recrutador_nome':     item.get('recrutador_nome'),
+                'recrutador_link':     item.get('recrutador_link'),
+                'observacoes':         item.get('observacoes'),
+                'salario':             item.get('salario'),
+                'tipo_contrato':       item.get('tipo_contrato'),
+                'nivel_experiencia':   item.get('nivel_experiencia'),
+                'relevance_score':     item.get('relevance_score'),
+            })
+        return result
+    except Exception:
+        return None
 
 def get_jobs_from_db(
     user_id: str,
@@ -316,48 +535,49 @@ def get_jobs_from_db(
     if not _db_exists():
         return []
 
-    desc_col = ", descricao_completa" if include_description else ""
+    desc_col = ", jg.descricao AS descricao_completa" if include_description else ""
 
     query = f"""
-        SELECT id, user_id, titulo, empresa, localizacao, plataforma, categoria, link,
-               data_publicacao,
-               COALESCE(data_scraped, '') AS data_scraped,
-               status,
-               recrutador_nome, recrutador_link, observacoes,
-               COALESCE(salario, '')           AS salario,
-               COALESCE(tipo_contrato, '')     AS tipo_contrato,
-               COALESCE(nivel_experiencia, '') AS nivel_experiencia,
-               relevance_score
+        SELECT jg.id, ju.user_id,
+               jg.titulo, jg.empresa, jg.localizacao, jg.plataforma, jg.categoria,
+               jg.link, jg.data_publicacao,
+               COALESCE(jg.data_scraped, '') AS data_scraped,
+               jg.status,
+               jg.recrutador_nome, jg.recrutador_link, jg.observacoes,
+               COALESCE(jg.salario,           '') AS salario,
+               COALESCE(jg.tipo_contrato,     '') AS tipo_contrato,
+               COALESCE(jg.nivel_experiencia, '') AS nivel_experiencia,
+               COALESCE(ju.relevance_score,    0) AS relevance_score
                {desc_col}
-        FROM vagas
-        WHERE user_id = ?
+        FROM jobs_global jg
+        JOIN jobs_users ju ON jg.id = ju.job_id
+        WHERE ju.user_id = ?
     """
     params: list = [user_id]
 
     if run_date:
-        # Sargable range — lets idx_vagas_user_scraped narrow the date band.
         day_start, day_end = _day_range(run_date)
-        query += " AND data_scraped >= ? AND data_scraped < ?"
+        query += " AND jg.data_scraped >= ? AND jg.data_scraped < ?"
         params.extend([day_start, day_end])
     if status:
-        query += " AND status = ?"
+        query += " AND jg.status = ?"
         params.append(status)
     if platform:
-        query += " AND LOWER(plataforma) LIKE ?"
+        query += " AND LOWER(jg.plataforma) LIKE ?"
         params.append(f"%{platform.lower()}%")
     if salario_only:
-        query += " AND salario IS NOT NULL AND salario != ''"
+        query += " AND jg.salario IS NOT NULL AND jg.salario != ''"
     if nivel:
-        query += " AND LOWER(nivel_experiencia) LIKE ?"
+        query += " AND LOWER(jg.nivel_experiencia) LIKE ?"
         params.append(f"%{nivel.lower()}%")
     if min_score is not None:
-        query += " AND COALESCE(relevance_score, 0) >= ?"
+        query += " AND COALESCE(ju.relevance_score, 0) >= ?"
         params.append(min_score)
 
     if sort_by_relevance:
-        query += " ORDER BY COALESCE(relevance_score, 0) DESC, data_scraped DESC LIMIT ?"
+        query += " ORDER BY COALESCE(ju.relevance_score, 0) DESC, jg.data_scraped DESC LIMIT ?"
     else:
-        query += " ORDER BY data_scraped DESC LIMIT ?"
+        query += " ORDER BY jg.data_scraped DESC LIMIT ?"
     params.append(limit)
 
     with contextlib.closing(_get_conn()) as conn:
@@ -369,8 +589,16 @@ def get_jobs_from_db(
 # ─────────────────────────────────────────────────────────────────────────────
 # Routes
 # ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/metrics", tags=["Health"], include_in_schema=False)
+def prometheus_metrics():
+    """Prometheus metrics endpoint — scraped by Prometheus server."""
+    content, media_type = generate_metrics_response()
+    return Response(content=content, media_type=media_type)
+
+
 @app.get("/api/v1/status", tags=["Health"])
-def health_check():
+def health_check(api_key: str = Depends(verify_api_key)):
     """Returns API health, DB status and total job count."""
     db_ok = _db_exists()
     job_count = 0
@@ -378,8 +606,8 @@ def health_check():
     if db_ok:
         try:
             with contextlib.closing(_get_conn()) as conn:
-                job_count = conn.execute("SELECT COUNT(*) FROM vagas").fetchone()[0]
-                rows = conn.execute("SELECT plataforma, COUNT(*) FROM vagas GROUP BY plataforma").fetchall()
+                job_count = conn.execute("SELECT COUNT(*) FROM jobs_global").fetchone()[0]
+                rows = conn.execute("SELECT plataforma, COUNT(*) FROM jobs_global GROUP BY plataforma").fetchall()
                 platforms = {r[0]: r[1] for r in rows}
         except Exception:
             pass
@@ -429,18 +657,34 @@ def get_jobs(
             raise HTTPException(status_code=422, detail="run_date must be in YYYY-MM-DD format or 'all'.")
         effective_date = run_date
 
-    jobs = get_jobs_from_db(
-        user_id=user_id,
-        status=status,
-        platform=platform,
-        limit=limit,
-        include_description=include_description,
-        run_date=effective_date,
-        salario_only=salario_only,
-        nivel=nivel,
-        sort_by_relevance=sort_by_relevance,
-        min_score=min_score,
-    )
+    # Try PocketBase first; fall back to SQLite if unavailable or returns None
+    jobs = None
+    if not include_description and _pb_available():
+        jobs = get_jobs_from_pb(
+            user_id=user_id,
+            status=status,
+            platform=platform,
+            limit=limit,
+            run_date=effective_date,
+            salario_only=salario_only,
+            nivel=nivel,
+            sort_by_relevance=sort_by_relevance,
+            min_score=min_score,
+        )
+
+    if jobs is None:
+        jobs = get_jobs_from_db(
+            user_id=user_id,
+            status=status,
+            platform=platform,
+            limit=limit,
+            include_description=include_description,
+            run_date=effective_date,
+            salario_only=salario_only,
+            nivel=nivel,
+            sort_by_relevance=sort_by_relevance,
+            min_score=min_score,
+        )
 
     return JobsResponse(
         user_id=user_id,
@@ -469,24 +713,36 @@ def get_single_job(
     if not _db_exists():
         raise HTTPException(status_code=503, detail="Database not found.")
 
+    # When OWNER_USER_ID is set, include it in the WHERE clause so we never
+    # fetch a row that belongs to a different user — prevents IDOR enumeration
+    # even before reaching the _enforce_owner() application-level check.
+    params: list = [job_id]
+    owner_filter = ""
+    if OWNER_USER_ID:
+        owner_filter = " AND ju.user_id = ?"
+        params.append(OWNER_USER_ID)
+
     with contextlib.closing(_get_conn()) as conn:
         row = conn.execute(
-            """
-            SELECT id, user_id, titulo, empresa, localizacao, plataforma, categoria, link,
-                   data_publicacao, data_scraped, status, descricao_completa,
-                   recrutador_nome, recrutador_link, observacoes,
-                   salario, tipo_contrato, nivel_experiencia, relevance_score
-            FROM vagas WHERE id = ?
+            f"""
+            SELECT jg.id, ju.user_id,
+                   jg.titulo, jg.empresa, jg.localizacao, jg.plataforma, jg.categoria,
+                   jg.link, jg.data_publicacao, jg.data_scraped, jg.status,
+                   jg.descricao AS descricao_completa,
+                   jg.recrutador_nome, jg.recrutador_link, jg.observacoes,
+                   jg.salario, jg.tipo_contrato, jg.nivel_experiencia,
+                   COALESCE(ju.relevance_score, 0) AS relevance_score
+            FROM jobs_global jg
+            JOIN jobs_users ju ON jg.id = ju.job_id
+            WHERE jg.id = ?{owner_filter}
+            LIMIT 1
             """,
-            (job_id,),
+            params,
         ).fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail=f"Job with id={job_id} not found.")
 
-    # Enforce owner check after fetch so we return 404 (not 403) when the job
-    # doesn't exist, regardless of ownership — avoids user_id enumeration.
-    _enforce_owner(dict(row).get('user_id', ''))
     return dict(row)
 
 
@@ -502,14 +758,21 @@ def get_stats(
 
     today_start, today_end = _day_range(datetime.now().strftime('%Y-%m-%d'))
     with contextlib.closing(_get_conn()) as conn:
-        total      = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=?", (user_id,)).fetchone()[0]
-        active     = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=? AND status='Ativa'", (user_id,)).fetchone()[0]
-        expired    = conn.execute("SELECT COUNT(*) FROM vagas WHERE user_id=? AND status='Expirada'", (user_id,)).fetchone()[0]
-        today_cnt  = conn.execute(
-            "SELECT COUNT(*) FROM vagas WHERE user_id=? AND data_scraped >= ? AND data_scraped < ?",
+        total     = conn.execute("SELECT COUNT(*) FROM jobs_users WHERE user_id=?", (user_id,)).fetchone()[0]
+        active    = conn.execute(
+            "SELECT COUNT(*) FROM jobs_global jg JOIN jobs_users ju ON jg.id=ju.job_id WHERE ju.user_id=? AND jg.status='Ativa'", (user_id,)
+        ).fetchone()[0]
+        expired   = conn.execute(
+            "SELECT COUNT(*) FROM jobs_global jg JOIN jobs_users ju ON jg.id=ju.job_id WHERE ju.user_id=? AND jg.status='Expirada'", (user_id,)
+        ).fetchone()[0]
+        today_cnt = conn.execute(
+            "SELECT COUNT(*) FROM jobs_global jg JOIN jobs_users ju ON jg.id=ju.job_id WHERE ju.user_id=? AND jg.data_scraped >= ? AND jg.data_scraped < ?",
             (user_id, today_start, today_end),
         ).fetchone()[0]
-        by_plat    = conn.execute("SELECT plataforma, COUNT(*) FROM vagas WHERE user_id=? GROUP BY plataforma", (user_id,)).fetchall()
+        by_plat   = conn.execute(
+            "SELECT jg.plataforma, COUNT(*) FROM jobs_global jg JOIN jobs_users ju ON jg.id=ju.job_id WHERE ju.user_id=? GROUP BY jg.plataforma",
+            (user_id,),
+        ).fetchall()
 
     return StatsResponse(
         total_jobs=total,
@@ -522,7 +785,7 @@ def get_stats(
 
 
 @app.get("/api/v1/profiles", tags=["Users"])
-def list_job_profiles():
+def list_job_profiles(api_key: str = Depends(verify_api_key)):
     """Returns the valid `job_profile` values and which scrapers each activates.
 
     Call this endpoint to know exactly what to send in the `job_profile` field
@@ -590,15 +853,32 @@ def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_ke
             if raw_profile:
                 print(f"[sync] Unknown job_profile '{raw_profile}' → normalised to 'generalist'")
 
-    # Convert lists to comma-separated strings for SQLite
-    job_titles_str          = ", ".join(profile.job_titles)            if profile.job_titles            else ""
-    locations_str           = ", ".join(profile.locations)             if profile.locations             else ""
-    exp_levels_str          = ", ".join(profile.experience_levels)     if profile.experience_levels     else ""
-    keywords_str            = ", ".join(profile.keywords)              if profile.keywords              else ""
-    negative_keywords_str   = ", ".join(profile.negative_keywords)     if profile.negative_keywords     else ""
-    negative_companies_str  = ", ".join(profile.negative_companies)    if profile.negative_companies    else ""
-    contract_type_str       = ", ".join(profile.contract_type)         if profile.contract_type         else ""
-    required_languages_str  = ", ".join(profile.required_languages)    if profile.required_languages    else ""
+    def _normalise_list(items: list) -> str:
+        """Flatten and deduplicate a list that may contain comma-separated strings.
+
+        Guards against clients that send accumulated strings as list items, e.g.
+        ["Randstad, Adecco,Canonical"] instead of ["Randstad", "Adecco", "Canonical"].
+        Always replaces — never appends to existing DB value.
+        """
+        flat = []
+        seen = set()
+        for item in (items or []):
+            for part in str(item).split(','):
+                clean = part.strip()
+                if clean and clean.lower() not in seen:
+                    seen.add(clean.lower())
+                    flat.append(clean)
+        return ", ".join(flat)
+
+    # Convert lists to comma-separated strings for SQLite (always full replacement)
+    job_titles_str          = _normalise_list(profile.job_titles)
+    locations_str           = _normalise_list(profile.locations)
+    exp_levels_str          = _normalise_list(profile.experience_levels)
+    keywords_str            = _normalise_list(profile.keywords)
+    negative_keywords_str   = _normalise_list(profile.negative_keywords)
+    negative_companies_str  = _normalise_list(profile.negative_companies)
+    contract_type_str       = _normalise_list(profile.contract_type)
+    required_languages_str  = _normalise_list(profile.required_languages)
 
     upsert_sql = '''
         INSERT INTO users_perfil (
@@ -650,6 +930,77 @@ def sync_user_profile(profile: UserProfile, api_key: str = Depends(verify_api_ke
         from automation.db_helper import execute_with_retry as _db_exec
         _db_exec(upsert_sql, params)
     except Exception as e:
+        from automation.monitoring import capture_exception
+        capture_exception(e, {'endpoint': '/users/sync', 'user_id': profile.user_id})
         raise HTTPException(status_code=500, detail=str(e))
 
+    # Mirror profile to PocketBase (non-fatal — SQLite is authoritative)
+    try:
+        from automation.pb_client import get_client as _pb_client
+        pb = _pb_client()
+        if pb.is_available():
+            pb.ensure_collections()
+            pb.upsert_profile(profile.user_id, {
+                'job_titles':          job_titles_str,
+                'keywords':            keywords_str,
+                'negative_keywords':   negative_keywords_str,
+                'negative_companies':  negative_companies_str,
+                'locations':           locations_str,
+                'is_remote':           profile.is_remote,
+                'min_salary':          profile.min_salary or 0,
+                'experience_levels':   exp_levels_str,
+                'search_description':  profile.search_description or '',
+                'contract_type':       contract_type_str,
+                'required_languages':  required_languages_str,
+                'job_profile':         job_profile_norm,
+                'is_active':           profile.is_active,
+                'callback_url':        profile.callback_url or '',
+            })
+    except Exception as _pb_err:
+        print(f"[sync] PocketBase mirror failed (non-fatal): {_pb_err}")
+
     return {"status": "success", "message": f"Profile for {profile.user_id} updated successfully."}
+
+
+@app.delete("/api/v1/users/{user_id}", tags=["Users"])
+def delete_user(
+    user_id: str,
+    api_key: str = Depends(verify_api_key),
+):
+    """Permanently delete a user profile and all associated job data.
+
+    Implements GDPR Article 17 (right to erasure). Removes:
+    - `users_perfil` row (preferences, callback_url, etc.)
+    - All `jobs_users` rows (user↔job associations + relevance scores)
+    - PocketBase `user_profiles` + `job_results` records (non-fatal if unavailable)
+
+    Does NOT delete `jobs_global` rows — those are shared across users.
+    """
+    _enforce_owner(user_id)
+    if not _db_exists():
+        raise HTTPException(status_code=503, detail="Database not found.")
+
+    try:
+        from automation.db_helper import execute_with_retry as _db_exec
+        _db_exec("DELETE FROM jobs_users   WHERE user_id = ?", (user_id,))
+        _db_exec("DELETE FROM users_perfil WHERE user_id = ?", (user_id,))
+    except Exception as e:
+        from automation.monitoring import capture_exception
+        capture_exception(e, {'endpoint': f'DELETE /users/{user_id}'})
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Mirror deletion to PocketBase (non-fatal — SQLite deletion already succeeded)
+    try:
+        from automation.pb_client import get_client as _pb_client
+        pb = _pb_client()
+        if pb.is_available():
+            pb.delete_user_data(user_id)
+    except Exception as pb_err:
+        print(f"[delete_user] PocketBase erasure failed (non-fatal): {pb_err}")
+
+    _log.info('user_deleted', user_id=user_id, gdpr_article=17)
+    return {
+        "status": "deleted",
+        "user_id": user_id,
+        "note": "Profile and job associations removed. Shared job data (jobs_global) is preserved.",
+    }

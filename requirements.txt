@@ -1,12 +1,12 @@
-# Pinned to versions verified working in production (audit Fase F #36).
-# Bumping any of these — especially undetected-chromedriver — should be
-# tested manually because Chrome/CDP API changes can silently break scrapers.
+# Pinned to versions verified working in production.
+# Python 3.11 base (3.9 was EOL Oct 2025 — upgraded 2026-06-01).
+# Bumping undetected-chromedriver should be tested manually (Chrome/CDP API changes).
 beautifulsoup4==4.14.3
-requests==2.32.5
+requests==2.33.0
 selenium==4.36.0
 feedparser==6.0.12
 undetected-chromedriver==3.5.5
-streamlit==1.50.0
+streamlit==1.54.0
 pandas==2.3.3
 resend==2.29.0
 fastapi==0.128.8
@@ -16,3 +16,14 @@ psutil==7.0.0
 celery==5.4.0
 redis==5.2.1
 flower==2.0.1
+# Browser automation
+playwright==1.52.0
+playwright-stealth==1.0.6
+# Observability
+sentry-sdk[fastapi]==2.29.1
+structlog==25.3.0
+prometheus-client==0.22.1
+# Security — explicit minimums for transitive deps with known CVEs (pip-audit 2026-06-01)
+urllib3>=2.7.0
+pillow>=12.2.0
+python-dotenv>=1.2.2

@@ -1,5 +1,5 @@
 # Use an official modern Python base image (Bookworm)
-FROM python:3.9-bookworm
+FROM python:3.11-bookworm
 
 # Set the working directory
 WORKDIR /app
@@ -35,6 +35,16 @@ RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd6
 # Copy requirements and install Python libraries
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Playwright Chromium + system dependencies (replaces undetected-chromedriver)
+# --with-deps installs libnss, libatk, libcups, etc. needed on headless Linux
+RUN playwright install chromium --with-deps
+
+# Non-root user for services that don't need system privileges (job_api, streamlit_app).
+# python_scraper and celery_selenium still run as root (cron/Xvfb require it).
+RUN groupadd -r scraper && useradd -r -g scraper -u 1001 -s /bin/bash scraper \
+    && mkdir -p /app/database /app/logs /app/tmp \
+    && chown -R scraper:scraper /app/database /app/logs /app/tmp
 
 # Add crontab file
 COPY config/crontab /etc/cron.d/scraper_cron

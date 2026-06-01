@@ -14,7 +14,8 @@ services:
       - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --save 60 1 --loglevel warning
+    # --requirepass: set REDIS_PASSWORD in .env (empty string = no auth, not recommended)
+    command: redis-server --save 60 1 --loglevel warning --requirepass "${REDIS_PASSWORD:-}"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
@@ -135,7 +136,9 @@ services:
     working_dir: /app
     # Inicia o cron e mantém o container vivo. Env vars são propagadas para o
     # cron via /etc/environment (PAM-loaded by `service cron start`).
-    command: bash -c "env > /etc/environment && service cron start && tail -f /dev/null"
+    # Only app-relevant vars are written (not PATH, HOME, etc.) and the file
+    # is restricted to root-only (chmod 600) so other processes can't read secrets.
+    command: bash -c "env | grep -E '^(DB_PATH|API_KEY|TARGET_USER_ID|OWNER_USER_ID|RESEND_API_KEY|EMAIL_|EXTERNAL_WEBHOOK_SECRET|ALLOW_HTTP_CALLBACKS|WEBHOOK_|MAX_JOBS_|DIAS_RETENCAO|ITJOBS_|PB_|SUPABASE_|REDIS_URL|SCRAPERS_|UVICORN_|VALID_JOB_|VERIFIER_|TUNNEL_UPDATE_|CLOUDFLARE_TUNNEL_|SENTRY_|DISPLAY|PYTHONUNBUFFERED|MIN_TIER_YIELD|INDEED_|EXPRESSO_|LINKEDIN_|SAPO_)' > /etc/environment && chmod 600 /etc/environment && service cron start && tail -f /dev/null"
     healthcheck:
       test: ["CMD", "pgrep", "cron"]
       interval: 60s
@@ -149,9 +152,10 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    user: "1001:1001"    # non-root (scraper user created in Dockerfile)
     shm_size: 2gb
     volumes:
-      - .:/app
+      - .:/app:ro              # code read-only
       - ./database:/app/database
     env_file:
       - .env
@@ -177,9 +181,11 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    user: "1001:1001"    # non-root (scraper user created in Dockerfile)
     volumes:
-      - .:/app
+      - .:/app:ro              # code read-only — writes only to database/
       - ./database:/app/database
+      - ./logs:/app/logs
     env_file:
       - .env
     environment:
@@ -201,15 +207,43 @@ services:
       retries: 3
       start_period: 15s
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # PocketBase — user-facing DB (profiles, job results, auth, admin UI)
+  # Admin UI: http://localhost:8091/_/ (first-run: create admin account)
+  # Host port 8091 avoids collision with other PocketBase instances on the same machine.
+  # Internal services reach it at http://pocketbase:8090 (container-to-container)
+  # ────────────────────────────────────────────────────────────────────────────
+  pocketbase:
+    container_name: searching_pocketbase
+    build:
+      context: .
+      dockerfile: Dockerfile.pocketbase
+    restart: unless-stopped
+    volumes:
+      - pocketbase_data:/pb/pb_data
+    ports:
+      - "127.0.0.1:8091:8090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   cloudflare_tunnel:
     container_name: cloudflare_tunnel
-    image: cloudflare/cloudflared:latest
+    # Custom Alpine wrapper (Dockerfile.cloudflared) — copies the cloudflared
+    # binary from the official scratch image into Alpine so we have sh + tee.
+    # This lets us pipe all output to a shared volume without docker.sock.
+    build:
+      context: .
+      dockerfile: Dockerfile.cloudflared
     restart: unless-stopped
-    # Quick Tunnel mode — generates an ephemeral *.trycloudflare.com URL on
-    # every restart. For a stable public hostname, migrate to a Named Tunnel
-    # (see CLOUDFLARE_TUNNEL.md). The Quick Tunnel is fine for development /
-    # demoing but should not be used as a production dependency.
-    command: tunnel --url http://job_api:8080
+    volumes:
+      - cloudflare_logs:/var/log/cloudflared
+    # Pipe stdout+stderr through tee so the URL banner is captured in the log
+    # file (the official image writes the URL as plain text to stderr).
+    command: sh -c "cloudflared --no-autoupdate tunnel --url http://job_api:8080 2>&1 | tee /var/log/cloudflared/tunnel.log"
     depends_on:
       job_api:
         condition: service_healthy
@@ -222,18 +256,67 @@ services:
     restart: unless-stopped
     volumes:
       - .:/app
-      - /var/run/docker.sock:/var/run/docker.sock
+      - cloudflare_logs:/var/log/cloudflared:ro
+      # docker.sock removed — notifier now reads the log file via the shared
+      # cloudflare_logs volume instead of calling `docker logs`.
     env_file:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
     working_dir: /app
-    # Uses a dedicated minimal image (Dockerfile.notifier) with only Python +
-    # docker CLI — docker.io is NOT installed in the main app image.
-    command: sh -c "while true; do python /app/automation/tunnel_update_notifier.py; sleep 20; done"
+    command: python /app/automation/tunnel_update_notifier.py --watch-log --log-path /var/log/cloudflared/tunnel.log --poll-interval 10
     depends_on:
       cloudflare_tunnel:
         condition: service_started
+  # ────────────────────────────────────────────────────────────────────────────
+  # Monitoring stack — Prometheus + Grafana (opt-in profile)
+  # Start with: docker-compose --profile monitoring up -d prometheus grafana
+  # Prometheus: http://localhost:9090
+  # Grafana:    http://localhost:3000  (admin / admin on first login)
+  # ────────────────────────────────────────────────────────────────────────────
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:v2.52.0
+    restart: unless-stopped
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    profiles:
+      - monitoring
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:10.4.2
+    restart: unless-stopped
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
+
 volumes:
   redis_data:
+    driver: local
+  pocketbase_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  cloudflare_logs:
     driver: local
