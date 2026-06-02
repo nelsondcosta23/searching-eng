@@ -10,7 +10,7 @@ echo se ainda existem ou se ja expiraram. Este processo pode demorar.
 echo Nao feches a janela.
 echo.
 
-docker exec python_scraper python -u /app/automation/job_verifier.py
+python -u automation/job_verifier.py
 
 echo.
 echo =======================================================

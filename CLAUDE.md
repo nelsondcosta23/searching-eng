@@ -88,13 +88,13 @@ docker logs -f python_scraper
 Actualmente em **Quick Tunnel mode** — gera um URL `*.trycloudflare.com` aleatório a cada restart. Para hostname permanente, migra para **Named Tunnel**:
 
 1. `cloudflared tunnel login` (no host, abre browser para autenticar com a conta Cloudflare)
-2. `cloudflared tunnel create searching-eng-api` → gera UUID e `~/.cloudflared/<UUID>.json`
+2. `cloudflared tunnel create scrapper_tcc-api` → gera UUID e `~/.cloudflared/<UUID>.json`
 3. Copia a credencial para `./tunnel/credentials.json` (versionado em `.gitignore`)
 4. Cria `./tunnel/config.yml` apontando para `http://job_api:8080`
 5. No Cloudflare dashboard → DNS → adicionar CNAME do hostname desejado para `<UUID>.cfargotunnel.com`
 6. Substituir o serviço `cloudflare_tunnel` no `docker-compose.yml` por:
    ```yaml
-   command: tunnel --config /etc/cloudflared/config.yml run searching-eng-api
+   command: tunnel --config /etc/cloudflared/config.yml run scrapper_tcc-api
    volumes:
      - ./tunnel:/etc/cloudflared:ro
    ```

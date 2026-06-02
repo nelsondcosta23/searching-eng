@@ -1,4 +1,4 @@
-# Searching Engine
+# scrapper_tcc
 
 Automated job scraping platform for Portugal and remote-EMEA roles. Runs daily, multi-user, self-contained via Docker Compose.
 
@@ -106,7 +106,7 @@ See [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) for:
 ## Project layout
 
 ```
-searching-eng/
+scrapper_tcc/
 ├── api/                    FastAPI app (main.py)
 ├── app/                    Streamlit dashboard
 ├── automation/             Core logic

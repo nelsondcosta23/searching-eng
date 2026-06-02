@@ -10,30 +10,17 @@ from typing import Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# Patterns to detect expired/unavailable job pages. Defined at module level so
-# the regex is compiled once, not once per job verification loop.
+# Patterns to detect expired/unavailable job pages
 _EXPIRY_RE = re.compile(
     r'(expirad|indispon[ií]vel|desativad|removid|no longer available|não encontrad|página não existe|não está activa)',
     re.I,
 )
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from automation.db_helper import execute_with_retry, transaction
-
-try:
-    from automation.pb_client import get_client as _get_pb_client
-    _PB_ENABLED = True
-except ImportError:
-    _PB_ENABLED = False
-
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 
-# --- Configuração via variáveis de ambiente (.env) ---
 VERIFIER_MAX_JOBS    = int(os.environ.get('VERIFIER_MAX_JOBS', '0'))      # 0 = sem limite
 VERIFIER_PAGE_TIMEOUT = int(os.environ.get('VERIFIER_PAGE_TIMEOUT', '15')) # segundos
 VERIFIER_SLEEP_BETWEEN = float(os.environ.get('VERIFIER_SLEEP_BETWEEN', '2')) # segundos entre verificações
-# Skip jobs verified within the last N days (default 2). Drastically reduces work
-# on subsequent runs. Set to 0 to force re-verify everything.
 VERIFIER_SKIP_RECENT_DAYS = int(os.environ.get('VERIFIER_SKIP_RECENT_DAYS', '2'))
 
 # Session Configuration with Retries
@@ -55,75 +42,58 @@ def verify_active_jobs():
         print(f"Database not found at {DB_PATH}. Ensure the db exists before verifying.")
         return
 
-    # Read job list with a SHORT-LIVED connection then close it. The previous
-    # design held a single write connection open across HTTP+Selenium probes
-    # (potentially hours), starving readers and bloating the WAL. (Audit #25.)
-    with transaction() as _conn:
-        # Select jobs marked as Active. Skip ones that were re-verified recently —
-        # they were already alive in the last VERIFIER_SKIP_RECENT_DAYS, no point
-        # hammering Selenium again. (Uses idx_vagas_status_verif COVERING index.)
+    # Read active jobs to verify
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=20)
+        conn.row_factory = sqlite3.Row
+        
         if VERIFIER_SKIP_RECENT_DAYS > 0:
-            cutoff_clause = "AND (data_ultima_verificacao IS NULL OR data_ultima_verificacao < datetime('now', ?))"
-            _cur = _conn.execute(
-                f"SELECT id, link, plataforma, titulo FROM jobs_global WHERE status IN ('Ativa', 'Inacessível') {cutoff_clause}",
-                (f'-{VERIFIER_SKIP_RECENT_DAYS} days',),
+            # Skip recently verified jobs to save requests/time
+            cutoff = f"-{VERIFIER_SKIP_RECENT_DAYS} days"
+            cursor = conn.execute(
+                "SELECT id, link, plataforma, titulo FROM jobs "
+                "WHERE status IN ('Ativa', 'Inacessível') "
+                "AND (data_scraped >= datetime('now', ?) OR data_scraped IS NULL)", (cutoff,)
             )
         else:
-            _cur = _conn.execute("SELECT id, link, plataforma, titulo FROM jobs_global WHERE status IN ('Ativa', 'Inacessível')")
-        jobs = _cur.fetchall()
-    # _conn is closed here — every UPDATE below uses execute_with_retry().
+            cursor = conn.execute("SELECT id, link, plataforma, titulo FROM jobs WHERE status IN ('Ativa', 'Inacessível')")
+            
+        jobs = [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        print(f"Error fetching active jobs: {e}")
+        return
+    finally:
+        if conn:
+            conn.close()
 
-    # PocketBase mirror — non-fatal if unavailable
-    _pb = None
-    if _PB_ENABLED:
-        _pb = _get_pb_client()
-        if not _pb.is_available():
-            _pb = None
-
-    def _mark_expired(job_id, link, ts):
-        # WHERE guard: don't overwrite if another process already changed status.
-        execute_with_retry(
-            "UPDATE jobs_global SET status = 'Expirada', data_ultima_verificacao = ? "
-            "WHERE id = ? AND status IN ('Ativa', 'Inacessível')",
-            (ts, job_id),
-        )
-        if _pb and link:
-            try:
-                _pb.update_job_status_by_link(link, 'Expirada')
-            except Exception:
-                pass
-
-    def _mark_verified(job_id, ts):
-        # Only update timestamp — don't touch status (may already be 'Expirada').
-        execute_with_retry(
-            "UPDATE jobs_global SET data_ultima_verificacao = ? "
-            "WHERE id = ? AND status IN ('Ativa', 'Inacessível')",
-            (ts, job_id),
-        )
-
-    def _mark_inacessivel(job_id, ts):
-        # Network failure — only mark if still active (don't revert 'Expirada').
-        execute_with_retry(
-            "UPDATE jobs_global SET status = 'Inacessível', data_ultima_verificacao = ? "
-            "WHERE id = ? AND status = 'Ativa'",
-            (ts, job_id),
-        )
-
-    # Apply max jobs limit if configured
     if VERIFIER_MAX_JOBS > 0:
         jobs = jobs[:VERIFIER_MAX_JOBS]
         print(f"[VERIFIER] Limit active: checking only the first {VERIFIER_MAX_JOBS} jobs.")
 
-    print(f"Found {len(jobs)} jobs to verify.")
+    print(f"Found {len(jobs)} active jobs to verify.")
+    if not jobs:
+        return
+
+    def _update_status(job_id: int, status: str):
+        try:
+            from automation.db_helper import execute_with_retry
+            execute_with_retry(
+                "UPDATE jobs SET status = ? WHERE id = ?",
+                (status, job_id)
+            )
+        except Exception as e:
+            print(f"  Failed to update job status: {e}")
 
     expired_count = 0
     verified_count = 0
 
-    regular_jobs = [j for j in jobs if 'Indeed' not in j[2] and 'LinkedIn' not in j[2]]
-    selenium_jobs = [j for j in jobs if 'Indeed' in j[2] or 'LinkedIn' in j[2]]
+    regular_jobs = [j for j in jobs if 'Indeed' not in j['plataforma'] and 'LinkedIn' not in j['plataforma']]
+    selenium_jobs = [j for j in jobs if 'Indeed' in j['plataforma'] or 'LinkedIn' in j['plataforma']]
 
     # 1. Process regular jobs with requests
-    for job_id, link, platform, title in regular_jobs:
+    for job in regular_jobs:
+        job_id, link, platform, title = job['id'], job['link'], job['plataforma'], job['titulo']
         try:
             time.sleep(random.uniform(VERIFIER_SLEEP_BETWEEN * 0.5, VERIFIER_SLEEP_BETWEEN))
 
@@ -137,14 +107,11 @@ def verify_active_jobs():
                 except requests.RequestException:
                     response = session.get(link, headers=HEADERS, timeout=15, allow_redirects=True)
                     status_code = response.status_code
-                # Some servers reject HEAD — fall back to GET on 405
                 if status_code == 405:
                     response = session.get(link, headers=HEADERS, timeout=15, allow_redirects=True)
                     status_code = response.status_code
 
-            now_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             job_expired = False
-            
             if status_code == 404:
                 job_expired = True
             elif status_code == 200:
@@ -155,19 +122,16 @@ def verify_active_jobs():
             
             if job_expired:
                 print(f"  [EXPIRED] {title[:40]}... ({platform})")
-                _mark_expired(job_id, link, now_date)
+                _update_status(job_id, 'Expirada')
                 expired_count += 1
             else:
-                _mark_verified(job_id, now_date)
-            verified_count += 1
+                # Keep active
+                verified_count += 1
         except requests.RequestException as e:
-            now_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             print(f"  [INACESSÍVEL] {title[:40]}... — network error: {e}")
-            _mark_inacessivel(job_id, now_date)
-            continue
+            _update_status(job_id, 'Inacessível')
         except Exception as e:
             print(f"Error processing {job_id}: {e}")
-            continue
 
     # 2. Process complex jobs with Selenium (Indeed/LinkedIn)
     if selenium_jobs:
@@ -203,25 +167,21 @@ def verify_active_jobs():
             driver.set_page_load_timeout(VERIFIER_PAGE_TIMEOUT)
 
             # Warm-up Indeed
-            if any('Indeed' in j[2] for j in selenium_jobs):
+            if any('Indeed' in j['plataforma'] for j in selenium_jobs):
                 try:
                     driver.get("https://pt.indeed.com/")
                     time.sleep(3)
                 except Exception:
                     pass
                 
-            for job_id, link, platform, title in selenium_jobs:
+            for job in selenium_jobs:
+                job_id, link, platform, title = job['id'], job['link'], job['plataforma'], job['titulo']
                 try:
                     driver.get(link)
-                    
-                    now_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     job_expired = False
                     
-                    # Polling loop: Verifica até 3 vezes (com 2s de intervalo) 
-                    # porque os alertas do LinkedIn/Indeed podem demorar a carregar (React/JS)
                     for attempt in range(3):
                         time.sleep(2)
-                        
                         source = driver.page_source
                         source_lower = source.lower()
                         title_lower = driver.title.lower()
@@ -235,26 +195,23 @@ def verify_active_jobs():
                                 job_expired = True
                                 
                         if job_expired:
-                            break # Encontrou a expiração, não precisa esperar mais
+                            break
                             
                     if job_expired:
                         print(f"  [EXPIRED] {title[:40]}... ({platform})")
-                        _mark_expired(job_id, link, now_date)
+                        _update_status(job_id, 'Expirada')
                         expired_count += 1
                     else:
-                        _mark_verified(job_id, now_date)
-                    verified_count += 1
+                        verified_count += 1
                 except Exception as e:
-                    now_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     print(f"  [INACESSÍVEL] {title[:40]}... ({platform}) — {e}")
-                    _mark_inacessivel(job_id, now_date)
-                    continue
+                    _update_status(job_id, 'Inacessível')
         finally:
             if driver:
                 driver.quit()
 
     print(f"\nVerification finished!")
-    print(f"- Total processed: {verified_count}")
+    print(f"- Total active / checked: {verified_count + expired_count}")
     print(f"- Jobs marked as Expired: {expired_count}")
     print(f"{'='*50}\n")
 

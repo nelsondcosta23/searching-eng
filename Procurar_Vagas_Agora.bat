@@ -9,7 +9,7 @@ echo As frotas dos scrapers (LinkedIn, Indeed, Sapo, etc.) estao a caminho...
 echo Este processo pode demorar alguns minutos. Nao feches a janela.
 echo.
 
-docker exec python_scraper python /app/automation/orchestrator.py
+python automation/orchestrator.py
 
 echo.
 echo =======================================================

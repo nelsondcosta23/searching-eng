@@ -1,34 +1,24 @@
-# Pinned to versions verified working in production.
-# Python 3.11 base (3.9 was EOL Oct 2025 — upgraded 2026-06-01).
-# Bumping undetected-chromedriver should be tested manually (Chrome/CDP API changes).
+# Core scraping & processing
 beautifulsoup4==4.14.3
 requests==2.33.0
 selenium==4.36.0
 feedparser==6.0.12
 undetected-chromedriver==3.5.5
-streamlit==1.54.0
 pandas==2.3.3
-resend==2.29.0
-fastapi==0.128.8
-uvicorn[standard]==0.39.0
-psutil==7.0.0
-# Task queue
-celery==5.4.0
-redis==5.2.1
-flower==2.0.1
+
+# Streamlit UI Dashboard
+streamlit==1.54.0
+
 # Browser automation
 playwright==1.52.0
 playwright-stealth==1.0.6
-# Observability
-sentry-sdk[fastapi]==2.29.1
-structlog==25.3.0
-prometheus-client==0.22.1
-# Security — explicit minimums for transitive deps with known CVEs (pip-audit 2026-06-01)
-urllib3>=2.7.0
-pillow>=12.2.0
+
+# Env configuration & system
 python-dotenv>=1.2.2
+psutil==7.0.0
+
 # Testing
 pytest==8.3.5
-httpx==0.28.1
+
 # Linting
 ruff==0.9.10

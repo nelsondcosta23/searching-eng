@@ -5,6 +5,12 @@ import random
 import contextlib
 from datetime import datetime
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 DB_PATH = os.environ.get('DB_PATH', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'database', 'vagas.db'))
 
 # Default retry settings for transient `database is locked` errors. SQLite's
@@ -103,123 +109,6 @@ def execute_with_retry(sql: str, params: tuple = (), max_attempts: int = _DEFAUL
                 conn.close()
     return -1  # unreachable
 
-def save_job_global(
-    user_id: str,
-    plataforma: str,
-    id_externo: str,
-    titulo: str,
-    empresa: str,
-    localizacao: str,
-    link: str,
-    data_pub: str = "Recent",
-    categoria: str = "Unknown",
-    descricao_completa: str = "",
-    recrutador_nome: str = "",
-    recrutador_link: str = "",
-    observacoes: str = "",
-    salario: str = "",
-    tipo_contrato: str = "",
-    nivel_experiencia: str = "",
-) -> bool:
-    """Write to jobs_global (upsert) + associate with user in jobs_users.
-
-    If the job URL already exists globally (saved by another user), only the
-    user association row is inserted. Both writes happen in one transaction.
-    """
-    data_agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    for attempt in range(_DEFAULT_RETRIES):
-        conn = None
-        try:
-            conn = _get_connection()
-            # Upsert into jobs_global — enrich empty fields only (never overwrite)
-            conn.execute('''
-                INSERT INTO jobs_global (
-                    link, titulo, empresa, localizacao, plataforma, id_externo,
-                    categoria, descricao, observacoes, recrutador_nome, recrutador_link,
-                    salario, tipo_contrato, nivel_experiencia, data_publicacao, data_scraped
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(link) DO UPDATE SET
-                    descricao       = CASE WHEN COALESCE(excluded.descricao,       '') != '' AND COALESCE(descricao,       '') = '' THEN excluded.descricao       ELSE descricao       END,
-                    observacoes     = CASE WHEN COALESCE(excluded.observacoes,     '') != '' AND COALESCE(observacoes,     '') = '' THEN excluded.observacoes     ELSE observacoes     END,
-                    salario         = CASE WHEN COALESCE(excluded.salario,         '') != '' AND COALESCE(salario,         '') = '' THEN excluded.salario         ELSE salario         END,
-                    tipo_contrato   = CASE WHEN COALESCE(excluded.tipo_contrato,   '') != '' AND COALESCE(tipo_contrato,   '') = '' THEN excluded.tipo_contrato   ELSE tipo_contrato   END,
-                    nivel_experiencia = CASE WHEN COALESCE(excluded.nivel_experiencia, '') != '' AND COALESCE(nivel_experiencia, '') = '' THEN excluded.nivel_experiencia ELSE nivel_experiencia END
-            ''', (
-                link, titulo, empresa, localizacao, plataforma, id_externo,
-                categoria, descricao_completa, observacoes, recrutador_nome, recrutador_link,
-                salario, tipo_contrato, nivel_experiencia, data_pub, data_agora,
-            ))
-            job_id = conn.execute('SELECT id FROM jobs_global WHERE link = ?', (link,)).fetchone()[0]
-            conn.execute(
-                'INSERT OR IGNORE INTO jobs_users (job_id, user_id, created_at) VALUES (?, ?, ?)',
-                (job_id, user_id, data_agora),
-            )
-            conn.commit()
-            return True
-        except sqlite3.OperationalError as e:
-            if _is_locked_error(e) and attempt < _DEFAULT_RETRIES - 1:
-                time.sleep(_BACKOFF_BASE + random.uniform(0.1, 0.5))
-                continue
-            raise
-        except sqlite3.IntegrityError:
-            return False
-        finally:
-            if conn:
-                conn.close()
-    return False
-
-
-def job_exists(link: str, titulo: str = '', empresa: str = '', user_id: str = '') -> bool:
-    """Check if this (link, user_id) combination already exists in jobs_global+jobs_users.
-
-    Returns False if the job is globally known but NOT yet associated with user_id —
-    so save_job_global() will add the user association without duplicating the job data.
-    """
-    for attempt in range(_DEFAULT_RETRIES):
-        conn = None
-        try:
-            conn = _get_connection()
-            if user_id:
-                # Primary: already associated with this user?
-                row = conn.execute('''
-                    SELECT 1 FROM jobs_global jg
-                    JOIN jobs_users ju ON jg.id = ju.job_id
-                    WHERE jg.link = ? AND ju.user_id = ?
-                    LIMIT 1
-                ''', (link, user_id)).fetchone()
-                if row:
-                    return True
-                # Secondary: same title+company already for this user?
-                if titulo and empresa:
-                    t = titulo.strip().lower()
-                    e = empresa.strip().lower()
-                    row = conn.execute('''
-                        SELECT 1 FROM jobs_global jg
-                        JOIN jobs_users ju ON jg.id = ju.job_id
-                        WHERE LOWER(TRIM(jg.titulo)) = ? AND LOWER(TRIM(jg.empresa)) = ?
-                          AND ju.user_id = ?
-                        LIMIT 1
-                    ''', (t, e, user_id)).fetchone()
-                    if row:
-                        return True
-            else:
-                row = conn.execute('SELECT 1 FROM jobs_global WHERE link = ?', (link,)).fetchone()
-                if row:
-                    return True
-            return False
-        except sqlite3.OperationalError as e:
-            if _is_locked_error(e) and attempt < _DEFAULT_RETRIES - 1:
-                time.sleep(_BACKOFF_BASE + random.uniform(0.1, 0.5))
-                continue
-            raise
-        finally:
-            if conn:
-                conn.close()
-    print(f"[DB ERROR] job_exists failed for {link} after retries.")
-    return False
-
-
 def save_job(
     user_id: str,
     plataforma: str,
@@ -238,12 +127,81 @@ def save_job(
     tipo_contrato: str = "",
     nivel_experiencia: str = "",
 ) -> bool:
-    """Thin wrapper — all scrapers call this unchanged; internally uses jobs_global."""
-    return save_job_global(
-        user_id=user_id, plataforma=plataforma, id_externo=id_externo,
-        titulo=titulo, empresa=empresa, localizacao=localizacao, link=link,
-        data_pub=data_pub, categoria=categoria, descricao_completa=descricao_completa,
-        recrutador_nome=recrutador_nome, recrutador_link=recrutador_link,
-        observacoes=observacoes, salario=salario, tipo_contrato=tipo_contrato,
-        nivel_experiencia=nivel_experiencia,
-    )
+    """Write to jobs table (upsert). Returns True if saved or updated, False otherwise."""
+    data_agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    for attempt in range(_DEFAULT_RETRIES):
+        conn = None
+        try:
+            conn = _get_connection()
+            # Upsert into jobs — enrich empty fields only (never overwrite)
+            conn.execute('''
+                INSERT INTO jobs (
+                    link, plataforma, id_externo, titulo, empresa, localizacao,
+                    data_publicacao, data_scraped, salario, tipo_contrato,
+                    nivel_experiencia, descricao, observacoes, recrutador_nome, recrutador_link
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(link) DO UPDATE SET
+                    descricao         = CASE WHEN COALESCE(excluded.descricao,         '') != '' AND COALESCE(descricao,         '') = '' THEN excluded.descricao         ELSE descricao         END,
+                    observacoes       = CASE WHEN COALESCE(excluded.observacoes,       '') != '' AND COALESCE(observacoes,       '') = '' THEN excluded.observacoes       ELSE observacoes       END,
+                    salario           = CASE WHEN COALESCE(excluded.salario,           '') != '' AND COALESCE(salario,           '') = '' THEN excluded.salario           ELSE salario           END,
+                    tipo_contrato     = CASE WHEN COALESCE(excluded.tipo_contrato,     '') != '' AND COALESCE(tipo_contrato,     '') = '' THEN excluded.tipo_contrato     ELSE tipo_contrato     END,
+                    nivel_experiencia = CASE WHEN COALESCE(excluded.nivel_experiencia, '') != '' AND COALESCE(nivel_experiencia, '') = '' THEN excluded.nivel_experiencia ELSE nivel_experiencia END,
+                    recrutador_nome   = CASE WHEN COALESCE(excluded.recrutador_nome,   '') != '' AND COALESCE(recrutador_nome,   '') = '' THEN excluded.recrutador_nome   ELSE recrutador_nome   END,
+                    recrutador_link   = CASE WHEN COALESCE(excluded.recrutador_link,   '') != '' AND COALESCE(recrutador_link,   '') = '' THEN excluded.recrutador_link   ELSE recrutador_link   END
+            ''', (
+                link, plataforma, id_externo, titulo, empresa, localizacao,
+                data_pub, data_agora, salario, tipo_contrato,
+                nivel_experiencia, descricao_completa, observacoes, recrutador_nome, recrutador_link
+            ))
+            conn.commit()
+            return True
+        except sqlite3.OperationalError as e:
+            if _is_locked_error(e) and attempt < _DEFAULT_RETRIES - 1:
+                time.sleep(_BACKOFF_BASE + random.uniform(0.1, 0.5))
+                continue
+            raise
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            if conn:
+                conn.close()
+    return False
+
+
+def job_exists(link: str, titulo: str = '', empresa: str = '', user_id: str = '') -> bool:
+    """Check if this job already exists in the jobs table by link or by title+company."""
+    for attempt in range(_DEFAULT_RETRIES):
+        conn = None
+        try:
+            conn = _get_connection()
+            # Primary: check link
+            row = conn.execute('SELECT 1 FROM jobs WHERE link = ? LIMIT 1', (link,)).fetchone()
+            if row:
+                return True
+            # Secondary: same title+company
+            if titulo and empresa:
+                t = titulo.strip().lower()
+                e = empresa.strip().lower()
+                row = conn.execute('''
+                    SELECT 1 FROM jobs
+                    WHERE LOWER(TRIM(titulo)) = ? AND LOWER(TRIM(empresa)) = ?
+                    LIMIT 1
+                ''', (t, e)).fetchone()
+                if row:
+                    return True
+            return False
+        except sqlite3.OperationalError as e:
+            if _is_locked_error(e) and attempt < _DEFAULT_RETRIES - 1:
+                time.sleep(_BACKOFF_BASE + random.uniform(0.1, 0.5))
+                continue
+            raise
+        finally:
+            if conn:
+                conn.close()
+    print(f"[DB ERROR] job_exists failed for {link} after retries.")
+    return False
+
+
+# Alias for backward compatibility
+save_job_global = save_job
