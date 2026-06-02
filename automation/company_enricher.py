@@ -26,12 +26,42 @@ def _clean_company_name(name: str) -> str:
     return cleaned if cleaned else name
 
 def fetch_inception_year(company_name: str) -> Tuple[Optional[int], Optional[str]]:
-    """Query the public Wikidata API for the company's inception year and description.
+    """Query the public Wikidata API for the company's inception year and description,
+    verifying that the matched entity is indeed an organization/company (P31).
     
     Returns (inception_year, description).
     """
     headers = {
         'User-Agent': 'TechJobIntelligenceTool/1.0 (nelsonfilipecosta@gmail.com) Requests/2.0'
+    }
+    
+    # Whitelist of acceptable Wikidata QIDs for P31 (Instance of)
+    # This ensures we reject family names, districts, places, sports clubs, etc.
+    ALLOWED_ORG_QIDS = {
+        'Q4830453',   # business
+        'Q783794',    # company
+        'Q6881511',   # enterprise
+        'Q43229',     # organization
+        'Q778575',    # conglomerate
+        'Q161243',    # commercial organization
+        'Q18388127',  # privately held company
+        'Q18388277',  # technology company
+        'Q21027622',  # tech company
+        'Q891723',    # public company
+        'Q89172',     # public company
+        'Q115376',    # subsidiary
+        'Q20864387',  # multinational company
+        'Q1049757',   # joint-stock company
+        'Q262623',    # private limited company
+        'Q1933095',   # nonprofit organization
+        'Q5464168',   # limited liability company
+        'Q2912447',   # holding company
+        'Q3431062',   # business enterprise
+        'Q2069273',   # software company
+        'Q167037',    # limited partnership
+        'Q1551065',   # collective organization
+        'Q624108',    # joint venture
+        'Q18608343',  # private limited company
     }
     
     # Try searching with cleaned name first, fallback to original if empty or no results
@@ -50,7 +80,7 @@ def fetch_inception_year(company_name: str) -> Tuple[Optional[int], Optional[str
                 "language": "en",
                 "format": "json",
                 "type": "item",
-                "limit": 1
+                "limit": 1  # Only the top result; if it's not a valid org, the name is ambiguous
             }
             res = requests.get(search_url, params=search_params, headers=headers, timeout=8)
             if res.status_code != 200:
@@ -60,16 +90,47 @@ def fetch_inception_year(company_name: str) -> Tuple[Optional[int], Optional[str
             if not search_results:
                 continue
             
-            entity_id = search_results[0].get("id")
-            description = search_results[0].get("description")
-            if not entity_id:
+            # Step 1b: Only accept the FIRST search result if it is a valid org.
+            # If the first valid org is at index > 0, the name is ambiguous (likely homonym)
+            # and we refuse the match rather than risk returning the wrong entity.
+            valid_entity_id = None
+            valid_description = None
+            
+            first_result = search_results[0] if search_results else None
+            if first_result:
+                entity_id = first_result.get("id")
+                description = first_result.get("description")
+                if entity_id:
+                    # Check P31 claims for the first result only
+                    p31_url = "https://www.wikidata.org/w/api.php"
+                    p31_params = {
+                        "action": "wbgetclaims",
+                        "entity": entity_id,
+                        "property": "P31",
+                        "format": "json"
+                    }
+                    p31_res = requests.get(p31_url, params=p31_params, headers=headers, timeout=8)
+                    if p31_res.status_code == 200:
+                        p31_data = p31_res.json()
+                        p31_claims = p31_data.get("claims", {}).get("P31", [])
+                        
+                        for claim in p31_claims:
+                            val_id = claim.get("mainsnak", {}).get("datavalue", {}).get("value", {}).get("id")
+                            if val_id in ALLOWED_ORG_QIDS:
+                                valid_entity_id = entity_id
+                                valid_description = description
+                                break
+                        # If first result is not a valid org → don't scan further (ambiguous name)
+            
+            if not valid_entity_id:
+                # None of the search results for this term matched the whitelist
                 continue
                 
-            # Step 2: Get claims for property P571 (inception)
+            # Step 2: Get claims for property P571 (inception) for the valid entity
             claims_url = "https://www.wikidata.org/w/api.php"
             claims_params = {
                 "action": "wbgetclaims",
-                "entity": entity_id,
+                "entity": valid_entity_id,
                 "property": "P571",
                 "format": "json"
             }
@@ -80,13 +141,13 @@ def fetch_inception_year(company_name: str) -> Tuple[Optional[int], Optional[str
             claims = claims_data.get("claims", {}).get("P571", [])
             if not claims:
                 # Cache description even if inception year is missing
-                return None, description
+                return None, valid_description
                 
             time_val = claims[0].get("mainsnak", {}).get("datavalue", {}).get("value", {}).get("time")
             if time_val:
                 m = re.match(r'^[+-](\d{4})', time_val)
                 if m:
-                    return int(m.group(1)), description
+                    return int(m.group(1)), valid_description
         except Exception as e:
             print(f"[company_enricher] API lookup failed for '{term}': {e}")
             
