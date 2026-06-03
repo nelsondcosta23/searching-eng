@@ -46,8 +46,8 @@ def transaction(max_attempts: int = _DEFAULT_RETRIES, row_factory=None):
 
     Example:
         with transaction() as conn:
-            conn.execute("UPDATE jobs_global SET ...")
-            conn.execute("UPDATE users_perfil SET ...")
+            conn.execute("UPDATE jobs SET status = 'Expirada' WHERE id = ?")
+            conn.execute("UPDATE companies SET company_age = ? WHERE name = ?")
     """
     conn = _get_connection()
     if row_factory is not None:

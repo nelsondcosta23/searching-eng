@@ -6,7 +6,7 @@ Phase 4 update: Playwright browser pool replaces undetected_chromedriver.
   - apply_stealth()   — anti-bot patches via playwright-stealth
 
 Legacy Selenium helpers (init_chrome_with_timeout, get_chrome_major_version)
-are kept for the selenium_backup/ copies and any emergency rollback.
+are kept for the job_verifier.py (which uses undetected_chromedriver for LinkedIn/Indeed).
 """
 from __future__ import annotations
 

@@ -227,9 +227,9 @@ def iniciar_scraper_expresso():
             for page in range(1, EXPRESSO_MAX_PAGES + 1):
                 try:
                     # Expresso uses &page=N for pagination (ASP.NET standard)
-                    search_url = (f"{BASE_URL}/pesquisa?K={_url_quote(q)}"
+                    search_url = (f"{BASE_URL}/emprego/pesquisa/{_url_quote(q)}"
                                   if page == 1 else
-                                  f"{BASE_URL}/pesquisa?K={_url_quote(q)}&page={page}")
+                                  f"{BASE_URL}/emprego/pesquisa/{_url_quote(q)}?page={page}")
                     main_page.goto(search_url, wait_until='domcontentloaded', timeout=30000)
                     time.sleep(random.uniform(3.0, 5.0))
 

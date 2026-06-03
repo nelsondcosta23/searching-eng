@@ -33,7 +33,26 @@ def test_fetch_inception_year(monkeypatch):
         ]
     }
 
-    # Mock response 2: wbgetclaims
+    # Mock response 2: wbgetclaims for P31
+    resp_p31 = MagicMock()
+    resp_p31.status_code = 200
+    resp_p31.json.return_value = {
+        "claims": {
+            "P31": [
+                {
+                    "mainsnak": {
+                        "datavalue": {
+                            "value": {
+                                "id": "Q4830453"
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    }
+
+    # Mock response 3: wbgetclaims
     resp2 = MagicMock()
     resp2.status_code = 200
     resp2.json.return_value = {
@@ -52,7 +71,7 @@ def test_fetch_inception_year(monkeypatch):
         }
     }
 
-    mock_get.side_effect = [resp1, resp2]
+    mock_get.side_effect = [resp1, resp_p31, resp2]
 
     year, desc = enricher_mod.fetch_inception_year("Google")
     assert year == 1998

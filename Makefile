@@ -26,7 +26,7 @@ verify:
 	python automation/job_verifier.py
 
 dashboard:
-	streamlit run app/job_dashboard.py
+	streamlit run app/job_dashboard.py --server.address=localhost
 
 db:
 	sqlite3 database/vagas.db

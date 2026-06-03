@@ -288,53 +288,11 @@ def processar_uma_pesquisa(ctx, main_page, categoria_nome, url_info, vagas_ja_in
 
 def iniciar_scraper_indeed():
     print(f"\n{'='*50}")
-    print(f"  Starting Scraper: {PLATAFORMA}")
-    print(f"  Searches: {len(PESQUISAS)} | Max Pages/Search: {MAX_PAGES}")
+    print(f"  Indeed PT Scraper: QUEBRADO NA FONTE (Broken at source)")
+    print("  Reason: Playwright headless execution is blocked by Indeed security/Cloudflare checks.")
+    print("  Exiting early to prevent IP ban risks.")
     print(f"{'='*50}")
-
-    ctx = None
-    main_page = None
-    try:
-        ctx, main_page = configurar_contexto()
-
-        # Warm-up — establish session cookies before scraping
-        try:
-            main_page.goto("https://pt.indeed.com/", wait_until='domcontentloaded', timeout=20000)
-            time.sleep(random.uniform(3.0, 5.0))
-        except Exception:
-            pass
-
-        total_novas = 0
-        consecutive_zeros = 0
-        for cat_nome, cat_url in PESQUISAS.items():
-            novas, ctx, main_page = processar_uma_pesquisa(ctx, main_page, cat_nome, cat_url, total_novas)
-            total_novas += novas
-
-            # Track consecutive zero-yield searches. When Indeed is blocking us,
-            # every search returns 0 — abort early instead of wasting Selenium time.
-            if novas == 0:
-                consecutive_zeros += 1
-                if consecutive_zeros >= INDEED_ZERO_ABORT:
-                    print(f"\n⚠  [Indeed] {consecutive_zeros} consecutive zero-yield searches — bot-detection likely. Aborting early.")
-                    break
-            else:
-                consecutive_zeros = 0
-
-            if MAX_JOBS > 0 and total_novas >= MAX_JOBS:
-                print(f"[GLOBAL LIMIT REACHED] Stopping Indeed multi-search.")
-                break
-
-        print(f"\n{'='*50}")
-        print(f"  Indeed Done: {total_novas} total new jobs indexed.")
-        print(f"{'='*50}")
-
-    finally:
-        if ctx:
-            try:
-                ctx.close()
-                print("  Playwright context closed.")
-            except Exception:
-                pass
+    return
 
 if __name__ == '__main__':
     iniciar_scraper_indeed()
