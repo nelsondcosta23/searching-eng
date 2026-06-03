@@ -10,6 +10,9 @@ from typing import Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# Add project root to path for shared modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Patterns to detect expired/unavailable job pages
 _EXPIRY_RE = re.compile(
     r'(expirad|indispon[ií]vel|desativad|removid|no longer available|não encontrad|página não existe|não está activa)',
