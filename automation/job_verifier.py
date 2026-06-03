@@ -36,6 +36,48 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
 }
 
+def is_safe_url(url: str) -> bool:
+    """Validate that the URL is a safe external address to query,
+    mitigating SSRF vulnerabilities by blocking localhost, private,
+    and loopback IP ranges."""
+    from urllib.parse import urlparse
+    import socket
+    import ipaddress
+    
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ('http', 'https'):
+            return False
+            
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+            
+        hostname = hostname.rstrip('.').lower()
+        if hostname in ('localhost', 'localhost.localdomain', 'loopback'):
+            return False
+            
+        # Fast IP address format check
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_loopback or ip.is_private or ip.is_link_local:
+                return False
+        except ValueError:
+            # It's a hostname, resolve to IP
+            try:
+                for info in socket.getaddrinfo(hostname, None):
+                    ip_str = info[4][0]
+                    ip = ipaddress.ip_address(ip_str)
+                    if ip.is_loopback or ip.is_private or ip.is_link_local:
+                        return False
+            except Exception:
+                # Treat failed name resolution as unsafe to be conservative
+                return False
+                
+        return True
+    except Exception:
+        return False
+
 def verify_active_jobs():
     print(f"\n{'='*50}")
     print(f"[{datetime.now().strftime('%H:%M:%S')}] STARTING VALIDITY CHECK")
@@ -98,6 +140,10 @@ def verify_active_jobs():
     for job in regular_jobs:
         job_id, link, platform, title = job['id'], job['link'], job['plataforma'], job['titulo']
         try:
+            if not is_safe_url(link):
+                print(f"  [UNSAFE URL] Skipping verification for SSRF risk: {link}")
+                _update_status(job_id, 'Inacessível')
+                continue
             time.sleep(random.uniform(VERIFIER_SLEEP_BETWEEN * 0.5, VERIFIER_SLEEP_BETWEEN))
 
             if 'Sapo' in platform or 'Net-Empregos' in platform:
@@ -180,6 +226,10 @@ def verify_active_jobs():
             for job in selenium_jobs:
                 job_id, link, platform, title = job['id'], job['link'], job['plataforma'], job['titulo']
                 try:
+                    if not is_safe_url(link):
+                        print(f"  [UNSAFE URL] Skipping Selenium verification for SSRF risk: {link}")
+                        _update_status(job_id, 'Inacessível')
+                        continue
                     driver.get(link)
                     job_expired = False
                     
