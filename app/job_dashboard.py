@@ -537,7 +537,7 @@ with t2:
             # Interactive Filter Bar
             with st.container():
                 st.markdown("<div style='font-size:12px;font-weight:600;text-transform:uppercase;color:#9CA3AF;margin-bottom:4px;'>Filtrar Vagas</div>", unsafe_allow_html=True)
-                f_c1, f_c2, f_c3, f_c4 = st.columns([2, 1, 1, 1])
+                f_c1, f_c2, f_c3, f_c4, f_c5 = st.columns([2, 1, 1, 1, 1])
                 
                 search_q = f_c1.text_input("Termo de pesquisa", placeholder="🔍 Pesquisar por Título, Empresa ou Localização...", label_visibility="collapsed")
                 
@@ -572,19 +572,19 @@ with t2:
             if sel_status != "Todas":
                 df_filtered = df_filtered[df_filtered['status'] == sel_status]
                 
-            c_count, c_export = st.columns([3, 1])
-            with c_count:
-                st.markdown(f"<div style='font-size:.75rem;color:#6B7280;margin-top:.4rem;margin-bottom:.6rem;'>A mostrar {len(df_filtered)} vagas correspondentes</div>", unsafe_allow_html=True)
-            with c_export:
+            # Render export button in the 5th column of the filter bar
+            with f_c5:
                 if not df_filtered.empty:
                     csv_data = df_filtered.to_csv(index=False).encode('utf-8')
                     st.download_button(
-                        label="📥 Exportar para CSV",
+                        label="📥 Exportar CSV",
                         data=csv_data,
                         file_name=f"vagas_tech_{datetime.now().strftime('%Y-%m-%d')}.csv",
                         mime="text/csv",
                         use_container_width=True
                     )
+            
+            st.markdown(f"<div style='font-size:.75rem;color:#6B7280;margin-top:.4rem;margin-bottom:.6rem;'>A mostrar {len(df_filtered)} vagas correspondentes</div>", unsafe_allow_html=True)
             
             # Format display dataframe
             if df_filtered.empty:
