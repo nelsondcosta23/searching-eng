@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  dashboard:
+    build: .
+    image: scrapper_tcc:latest
+    container_name: tcc_dashboard
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - ./database:/app/database
+    env_file:
+      - .env
+    shm_size: '2gb'
+    command: sh -c "python init_db.py && streamlit run app/job_dashboard.py --server.address=0.0.0.0 --server.port=8501"
+
+  scraper:
+    build: .
+    image: scrapper_tcc:latest
+    container_name: tcc_scraper
+    volumes:
+      - ./database:/app/database
+    env_file:
+      - .env
+    shm_size: '2gb'
+    command: sh -c "python init_db.py && python automation/orchestrator.py"
