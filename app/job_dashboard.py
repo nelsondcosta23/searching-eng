@@ -31,7 +31,7 @@ def load_all_companies() -> pd.DataFrame:
         return pd.DataFrame()
 
 st.set_page_config(
-    page_title="Tech Job Market — Portugal",
+    page_title="Tech Job Market — PT, UK, US",
     page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded",
