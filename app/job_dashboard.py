@@ -3,6 +3,7 @@ import sqlite3
 import contextlib
 import pandas as pd
 import os
+import sys
 
 try:
     from dotenv import load_dotenv
@@ -14,7 +15,7 @@ import subprocess
 from datetime import datetime, timedelta
 
 st.set_page_config(
-    page_title="JobRadar — Tech Market Intelligence",
+    page_title="Tech Job Market — Portugal",
     page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -120,7 +121,7 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=30)
 def load_all_jobs() -> pd.DataFrame:
-    """Loads all active tech jobs."""
+    """Loads all tech jobs (active and expired)."""
     if not os.path.exists(DB_PATH):
         return pd.DataFrame()
     try:
@@ -129,9 +130,9 @@ def load_all_jobs() -> pd.DataFrame:
             df = pd.read_sql_query('''
                 SELECT id, plataforma, titulo, empresa, localizacao, link,
                        salario, tipo_contrato, nivel_experiencia, job_type,
-                       recrutador_nome, recrutador_link, data_publicacao, data_scraped, posting_age_days
+                       status, recrutador_nome, recrutador_link, data_publicacao, data_scraped, posting_age_days
                 FROM jobs
-                WHERE status = 'Ativa' AND job_type != 'Non-tech'
+                WHERE job_type != 'Non-tech'
                 ORDER BY data_scraped DESC
             ''', conn)
             return df
@@ -209,8 +210,8 @@ def is_scraper_running() -> bool:
 with st.sidebar:
     st.markdown("""
     <div style='padding:.2rem 0 .6rem;'>
-      <div style='font-size:1.4rem;font-weight:900;color:#F3F4F6;'>🎯 JobRadar</div>
-      <div style='font-size:.65rem;color:#9CA3AF;font-weight:500;margin-top:.1rem;'>Tech Job-Market Intelligence</div>
+      <div style='font-size:1.4rem;font-weight:900;color:#F3F4F6;'>🎯 Tech Job Market</div>
+      <div style='font-size:.65rem;color:#9CA3AF;font-weight:500;margin-top:.1rem;'>Portugal</div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -281,7 +282,7 @@ with st.sidebar:
         st.rerun()
         
     st.divider()
-    st.markdown("<div style='text-align:center;font-size:.6rem;color:#4B5563;'>JobRadar Single-User v3.0</div>", unsafe_allow_html=True)
+    st.markdown("<div style='text-align:center;font-size:.6rem;color:#4B5563;'>Tech Job Market Portugal v3.0</div>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Load Data
@@ -293,7 +294,7 @@ df_job_types = load_job_type_dist()
 # ─────────────────────────────────────────────────────────────────────────────
 # Header & KPI Row
 # ─────────────────────────────────────────────────────────────────────────────
-st.markdown("<div style='font-size:1.8rem;font-weight:900;color:#111827;margin-bottom:1rem;'>Tech Market Intelligence Dashboard</div>", unsafe_allow_html=True)
+st.markdown("<div style='font-size:1.8rem;font-weight:900;color:#111827;margin-bottom:1rem;'>Tech Job Market — Portugal</div>", unsafe_allow_html=True)
 
 if is_scraper_running():
     st.markdown("""
@@ -348,16 +349,16 @@ with c4:
 # ─────────────────────────────────────────────────────────────────────────────
 # Market Report Tabs
 # ─────────────────────────────────────────────────────────────────────────────
-t1, t2 = st.tabs(["📊 Company Hiring Intelligence", "🔍 Active Vacancy Explorer"])
+t1, t2 = st.tabs(["🏢 Vista por Empresa", "🔍 Exploração de Vagas"])
 
 # Tab 1: Analytics & Reports
 with t1:
     col_l, col_r = st.columns([0.65, 0.35], gap="large")
     
     with col_l:
-        st.markdown("### Top Hiring Companies Report")
+        st.markdown("### Ranking de Empresas Recrutadoras")
         if df_rankings.empty:
-            st.info("No rankings data available. Run the scraper first.")
+            st.info("Sem dados de ranking disponíveis. Execute o scraper primeiro.")
         else:
             # We want to present: Company, Age, Open Tech positions, Job type list.
             # Combine rankings with detail breakdowns.
@@ -380,22 +381,22 @@ with t1:
             report_rows = []
             for _, row in df_rankings.iterrows():
                 co = row['empresa']
-                age = f"{int(row['company_age'])} yrs" if pd.notnull(row['company_age']) else "Unknown"
+                age = f"{int(row['company_age'])} anos" if pd.notnull(row['company_age']) else "Desconhecido"
                 founded = f"{int(row['inception_year'])}" if pd.notnull(row['inception_year']) else "—"
                 
                 # Fetch posting age stats
                 ages = df_jobs[df_jobs['empresa'].str.lower() == co.lower()]['posting_age_days'].dropna()
-                avg_age = f"{round(ages.mean(), 1)} days" if not ages.empty else "N/A"
+                avg_age = f"{round(ages.mean(), 1)} dias" if not ages.empty else "N/D"
                 
                 breakdown_str = ", ".join(breakdown_dict.get(co, []))
                 
                 report_rows.append({
-                    "Company": co,
-                    "Founded": founded,
-                    "Company Age": age,
-                    "Tech Positions": int(row['open_positions']),
-                    "Job Types Breakdown": breakdown_str,
-                    "Avg Vacancy Age": avg_age
+                    "Empresa": co,
+                    "Ano de Fundação": founded,
+                    "Idade da Empresa": age,
+                    "Nº de Vagas Tech": int(row['open_positions']),
+                    "Repartição por Categoria": breakdown_str,
+                    "Idade Média das Vagas": avg_age
                 })
             
             df_report = pd.DataFrame(report_rows)
@@ -406,18 +407,18 @@ with t1:
                 from automation.job_analytics import generate_markdown_report
                 md_content = generate_markdown_report()
                 st.download_button(
-                    label="📥 Download Markdown Intelligence Report",
+                    label="📥 Descarregar Relatório de Inteligência (Markdown)",
                     data=md_content,
-                    file_name=f"job_market_report_{datetime.now().strftime('%Y-%m-%d')}.md",
+                    file_name=f"relatorio_mercado_tech_{datetime.now().strftime('%Y-%m-%d')}.md",
                     mime="text/markdown"
                 )
             except Exception:
                 pass
 
     with col_r:
-        st.markdown("### Job Category Distribution")
+        st.markdown("### Distribuição por Categoria")
         if df_job_types.empty:
-            st.info("No job categories to display.")
+            st.info("Nenhuma categoria para exibir.")
         else:
             # Display distribution as a chart
             st.bar_chart(
@@ -427,7 +428,7 @@ with t1:
             
             # Table listing
             st.dataframe(
-                df_job_types.rename(columns={"job_type": "Job Type", "count": "Vacancies"}),
+                df_job_types.rename(columns={"job_type": "Categoria", "count": "Vagas"}),
                 use_container_width=True,
                 hide_index=True
             )
@@ -435,7 +436,7 @@ with t1:
 # Tab 2: Job Explorer & Details
 with t2:
     if df_jobs.empty:
-        st.info("No jobs stored in the database. Use the sidebar to run a scrape.")
+        st.info("Nenhuma vaga armazenada na base de dados. Use a barra lateral para executar uma recolha.")
     else:
         # Check if user has selected a job ID
         selected_job_id = st.query_params.get("job_id")
@@ -447,15 +448,15 @@ with t2:
             job_id_int = int(selected_job_id)
             rows = df_jobs[df_jobs['id'] == job_id_int]
             if rows.empty:
-                st.error("Selected vacancy details could not be found.")
-                if st.button("← Back to listings"):
+                st.error("Os detalhes da vaga selecionada não foram encontrados.")
+                if st.button("← Voltar para a lista"):
                     st.query_params.clear()
                     st.rerun()
             else:
                 v = rows.iloc[0]
                 
                 # Back Button
-                if st.button("← Back to listings", key="back_btn_top"):
+                if st.button("← Voltar para a lista", key="back_btn_top"):
                     st.query_params.clear()
                     st.rerun()
                 
@@ -468,7 +469,7 @@ with t2:
                         {v['titulo']}
                       </div>
                       <div style='font-size:1rem;color:#4B5563;font-weight:500;'>
-                        🏢 {v['empresa']} &nbsp;·&nbsp; 📍 {v['localizacao'] or 'Location not specified'}
+                        🏢 {v['empresa']} &nbsp;·&nbsp; 📍 {v['localizacao'] or 'Localização não especificada'}
                       </div>
                     </div>
                     <div style='display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;'>
@@ -482,30 +483,30 @@ with t2:
                 # Info Tiles
                 ti_c1, ti_c2, ti_c3, ti_c4 = st.columns(4)
                 
-                age_val = f"{int(v['posting_age_days'])} days ago" if pd.notnull(v['posting_age_days']) else "Recent"
+                age_val = f"{int(v['posting_age_days'])} dias" if pd.notnull(v['posting_age_days']) else "Recente"
                 
-                ti_c1.markdown(f"""<div class='info-block'><div class='info-block-label'>Estimated Age</div><div class='info-block-value'>{age_val}</div></div>""", unsafe_allow_html=True)
-                ti_c2.markdown(f"""<div class='info-block'><div class='info-block-label'>Salary Range</div><div class='info-block-value'>{v['salario'] or 'Not disclosed'}</div></div>""", unsafe_allow_html=True)
-                ti_c3.markdown(f"""<div class='info-block'><div class='info-block-label'>Contract Type</div><div class='info-block-value'>{v['tipo_contrato'] or 'Not specified'}</div></div>""", unsafe_allow_html=True)
-                ti_c4.markdown(f"""<div class='info-block'><div class='info-block-label'>Seniority</div><div class='info-block-value'>{v['nivel_experiencia'] or 'Not specified'}</div></div>""", unsafe_allow_html=True)
+                ti_c1.markdown(f"""<div class='info-block'><div class='info-block-label'>Idade Estimada</div><div class='info-block-value'>{age_val}</div></div>""", unsafe_allow_html=True)
+                ti_c2.markdown(f"""<div class='info-block'><div class='info-block-label'>Intervalo Salarial</div><div class='info-block-value'>{v['salario'] or 'Não divulgado'}</div></div>""", unsafe_allow_html=True)
+                ti_c3.markdown(f"""<div class='info-block'><div class='info-block-label'>Tipo de Contrato</div><div class='info-block-value'>{v['tipo_contrato'] or 'Não especificado'}</div></div>""", unsafe_allow_html=True)
+                ti_c4.markdown(f"""<div class='info-block'><div class='info-block-label'>Experiência</div><div class='info-block-value'>{v['nivel_experiencia'] or 'Não especificada'}</div></div>""", unsafe_allow_html=True)
                 
                 # Job description and sidebar layout
                 layout_l, layout_r = st.columns([0.7, 0.3], gap="large")
                 
                 with layout_l:
-                    st.markdown("<div style='font-size:.8rem;font-weight:700;text-transform:uppercase;color:#9CA3AF;'>Role Description</div>", unsafe_allow_html=True)
+                    st.markdown("<div style='font-size:.8rem;font-weight:700;text-transform:uppercase;color:#9CA3AF;'>Descrição do Cargo</div>", unsafe_allow_html=True)
                     desc_text = load_job_description(v['id'])
                     if desc_text:
                         st.text_area("", value=desc_text, height=450, disabled=True)
                     else:
-                        st.markdown("*No description text available.*")
+                        st.markdown("*Nenhum texto de descrição disponível.*")
                 
                 with layout_r:
-                    st.markdown("<div style='font-size:.8rem;font-weight:700;text-transform:uppercase;color:#9CA3AF;'>Metadata & Actions</div>", unsafe_allow_html=True)
+                    st.markdown("<div style='font-size:.8rem;font-weight:700;text-transform:uppercase;color:#9CA3AF;'>Metadados e Ações</div>", unsafe_allow_html=True)
                     
                     st.markdown(f"""
                     <div class='info-block'>
-                      <div class='info-block-label'>Platform Extracted From</div>
+                      <div class='info-block-label'>Plataforma de Extração</div>
                       <div class='info-block-value'>{v['plataforma']}</div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -513,7 +514,7 @@ with t2:
                     if v['recrutador_nome']:
                         st.markdown(f"""
                         <div class='info-block'>
-                          <div class='info-block-label'>Recruiter Profile</div>
+                          <div class='info-block-label'>Perfil do Recrutador</div>
                           <div class='info-block-value'>
                             <a href='{v['recrutador_link']}' target='_blank' style='color:#4F46E5;text-decoration:none;'>
                               👤 {v['recrutador_nome']}
@@ -522,7 +523,7 @@ with t2:
                         </div>
                         """, unsafe_allow_html=True)
                         
-                    st.link_button("Apply to Position 🚀", v['link'], type="primary", use_container_width=True)
+                    st.link_button("Candidatar-se à Vaga 🚀", v['link'], type="primary", use_container_width=True)
                     
         else:
             # ─────────────────────────────────────────────────────────────────
@@ -531,22 +532,21 @@ with t2:
             
             # Interactive Filter Bar
             with st.container():
-                st.markdown("<div style='font-size:12px;font-weight:600;text-transform:uppercase;color:#9CA3AF;margin-bottom:4px;'>Filter Openings</div>", unsafe_allow_html=True)
+                st.markdown("<div style='font-size:12px;font-weight:600;text-transform:uppercase;color:#9CA3AF;margin-bottom:4px;'>Filtrar Vagas</div>", unsafe_allow_html=True)
                 f_c1, f_c2, f_c3, f_c4 = st.columns([2, 1, 1, 1])
                 
-                search_q = f_c1.text_input("Search term", placeholder="🔍 Search Title, Company, or Location...", label_visibility="collapsed")
+                search_q = f_c1.text_input("Termo de pesquisa", placeholder="🔍 Pesquisar por Título, Empresa ou Localização...", label_visibility="collapsed")
                 
                 # Job Type list
                 avail_types = sorted(df_jobs['job_type'].dropna().unique().tolist())
-                sel_type = f_c2.selectbox("Job Type", ["All Types"] + avail_types, label_visibility="collapsed")
+                sel_type = f_c2.selectbox("Tipo de Vaga", ["Todos os Tipos"] + avail_types, index=0, label_visibility="collapsed")
                 
                 # Platform List
                 avail_plats = sorted(df_jobs['plataforma'].apply(lambda x: x.split('(')[0].strip()).unique().tolist())
-                sel_plat = f_c3.selectbox("Platform", ["All Platforms"] + avail_plats, label_visibility="collapsed")
+                sel_plat = f_c3.selectbox("Plataforma", ["Todas as Plataformas"] + avail_plats, index=0, label_visibility="collapsed")
                 
-                # Seniority
-                avail_sen = sorted(df_jobs['nivel_experiencia'].dropna().unique().tolist())
-                sel_sen = f_c4.selectbox("Seniority", ["All Seniorities"] + avail_sen, label_visibility="collapsed")
+                # Estado (Status) filter - default to Ativa
+                sel_status = f_c4.selectbox("Estado", ["Ativa", "Expirada", "Todas"], index=0, label_visibility="collapsed")
                 
             # Filter Dataframe
             df_filtered = df_jobs.copy()
@@ -559,41 +559,57 @@ with t2:
                     df_filtered['localizacao'].str.lower().str.contains(q)
                 ]
                 
-            if sel_type != "All Types":
+            if sel_type != "Todos os Tipos":
                 df_filtered = df_filtered[df_filtered['job_type'] == sel_type]
                 
-            if sel_plat != "All Platforms":
+            if sel_plat != "Todas as Plataformas":
                 df_filtered = df_filtered[df_filtered['plataforma'].str.startswith(sel_plat)]
                 
-            if sel_sen != "All Seniorities":
-                df_filtered = df_filtered[df_filtered['nivel_experiencia'] == sel_sen]
+            if sel_status != "Todas":
+                df_filtered = df_filtered[df_filtered['status'] == sel_status]
                 
-            st.markdown(f"<div style='font-size:.75rem;color:#6B7280;margin-top:.4rem;margin-bottom:.6rem;'>Showing {len(df_filtered)} matching vacancies</div>", unsafe_allow_html=True)
+            c_count, c_export = st.columns([3, 1])
+            with c_count:
+                st.markdown(f"<div style='font-size:.75rem;color:#6B7280;margin-top:.4rem;margin-bottom:.6rem;'>A mostrar {len(df_filtered)} vagas correspondentes</div>", unsafe_allow_html=True)
+            with c_export:
+                if not df_filtered.empty:
+                    csv_data = df_filtered.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Exportar para CSV",
+                        data=csv_data,
+                        file_name=f"vagas_tech_{datetime.now().strftime('%Y-%m-%d')}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
             
             # Format display dataframe
             if df_filtered.empty:
-                st.info("No tech vacancies match the current filters.")
+                st.info("Nenhuma vaga corresponde aos filtros selecionados.")
             else:
-                display_cols = ["titulo", "empresa", "localizacao", "job_type", "plataforma", "data_publicacao", "posting_age_days"]
+                display_cols = ["titulo", "empresa", "job_type", "link", "plataforma", "status", "data_publicacao", "posting_age_days"]
                 df_show = df_filtered[display_cols].copy()
                 
                 # Clean platform display
                 df_show['plataforma'] = df_show['plataforma'].apply(lambda x: x.split('(')[0].strip())
-                df_show['posting_age_days'] = df_show['posting_age_days'].apply(lambda x: f"{int(x)} days ago" if pd.notnull(x) else "Recent")
+                df_show['posting_age_days'] = df_show['posting_age_days'].apply(lambda x: f"{int(x)} dias" if pd.notnull(x) else "Recente")
                 
                 df_show.rename(columns={
-                    "titulo": "Role Title",
-                    "empresa": "Company",
-                    "localizacao": "Location",
-                    "job_type": "Category",
-                    "plataforma": "Source",
-                    "data_publicacao": "Scraped Date",
-                    "posting_age_days": "Estimated Age"
+                    "titulo": "Título",
+                    "empresa": "Empresa",
+                    "job_type": "Tipo",
+                    "link": "Link",
+                    "plataforma": "Plataforma",
+                    "status": "Estado",
+                    "data_publicacao": "Extraído em",
+                    "posting_age_days": "Idade Estimada"
                 }, inplace=True)
                 
-                # Render list selection
+                # Render list selection with link column config
                 selected_row = st.dataframe(
                     df_show,
+                    column_config={
+                        "Link": st.column_config.LinkColumn("URL", display_text="Abrir ↗")
+                    },
                     use_container_width=True,
                     hide_index=True,
                     on_select="rerun",
