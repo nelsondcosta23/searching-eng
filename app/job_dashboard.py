@@ -19,6 +19,18 @@ import subprocess
 from datetime import datetime, timedelta
 
 # Country detection is now retrieved from DB column normalized_country
+import json
+
+@st.cache_data(ttl=60)
+def load_company_classifications() -> dict:
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "company_classifications.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return {k.lower().strip(): v for k, v in json.load(f).items()}
+        except Exception:
+            pass
+    return {}
 
 @st.cache_data(ttl=60)
 def load_all_companies() -> pd.DataFrame:
@@ -337,7 +349,9 @@ df_active = df_jobs_filtered[df_jobs_filtered['status'] == 'Ativa']
 if df_active.empty:
     df_rankings = pd.DataFrame(columns=["empresa", "open_positions", "inception_year", "company_age"])
 else:
-    df_counts = df_active.groupby('empresa').size().reset_index(name='open_positions')
+    # Exclude Unknown and Not specified from rankings
+    df_active_ranking = df_active[~df_active['empresa'].str.lower().isin(['unknown', 'not specified', ''])]
+    df_counts = df_active_ranking.groupby('empresa').size().reset_index(name='open_positions')
     df_counts['empresa_lower'] = df_counts['empresa'].str.lower()
     if not df_companies.empty:
         df_companies['name_lower'] = df_companies['name'].str.lower()
@@ -419,6 +433,33 @@ t1, t2 = st.tabs(["🏢 Vista por Empresa", "🔍 Exploração de Vagas"])
 
 # Tab 1: Analytics & Reports
 with t1:
+    classifications = load_company_classifications()
+    
+    # Compute active jobs categories percentages dynamically
+    df_active_ranking = df_active[~df_active['empresa'].str.lower().isin(['unknown', 'not specified', ''])]
+    if not df_active_ranking.empty:
+        # Avoid SettingWithCopyWarning by copying
+        df_active_ranking = df_active_ranking.copy()
+        df_active_ranking['class_cat'] = df_active_ranking['empresa'].apply(
+            lambda name: classifications.get(name.lower().strip(), "Não classificada")
+        )
+        cat_counts = df_active_ranking['class_cat'].value_counts()
+        tot = len(df_active_ranking)
+        pct_emp = (cat_counts.get("Empregador Direto", 0) / tot) * 100
+        pct_con = (cat_counts.get("Consultora IT", 0) / tot) * 100
+        pct_age = (cat_counts.get("Agência/Intermediário", 0) / tot) * 100
+        pct_noc = (cat_counts.get("Não classificada", 0) / tot) * 100
+    else:
+        pct_emp = pct_con = pct_age = pct_noc = 0.0
+        
+    st.markdown("<div style='font-size:1rem;font-weight:700;color:#374151;margin-bottom:0.6rem;'>Repartição do Mercado (Vagas Ativas)</div>", unsafe_allow_html=True)
+    pct_cols = st.columns(4)
+    pct_cols[0].metric("🏢 Empregadores Diretos", f"{pct_emp:.1f}%")
+    pct_cols[1].metric("💼 Consultoras IT", f"{pct_con:.1f}%")
+    pct_cols[2].metric("👥 Agências/Intermediários", f"{pct_age:.1f}%")
+    pct_cols[3].metric("❓ Não Classificadas", f"{pct_noc:.1f}%")
+    st.divider()
+
     col_l, col_r = st.columns([0.65, 0.35], gap="large")
     
     with col_l:
@@ -426,6 +467,12 @@ with t1:
         if df_rankings.empty:
             st.info("Sem dados de ranking disponíveis. Execute o scraper primeiro.")
         else:
+            sel_class = st.selectbox(
+                "Filtrar por Categoria",
+                ["Todas as Categorias", "Empregador Direto", "Consultora IT", "Agência/Intermediário", "Não classificada"],
+                index=0
+            )
+            
             # Compute company job types breakdown dynamically from df_active
             breakdown_dict = {}
             company_countries = {}
@@ -457,8 +504,12 @@ with t1:
                 breakdown_str = ", ".join(breakdown_dict.get(co, []))
                 countries_str = company_countries.get(co, "—")
                 
+                # Look up category classification
+                category = classifications.get(co.lower().strip(), "Não classificada")
+                
                 report_rows.append({
                     "Empresa": co,
+                    "Categoria": category,
                     "País(es)": countries_str,
                     "Ano de Fundação": founded,
                     "Idade da Empresa": age,
@@ -468,6 +519,11 @@ with t1:
                 })
             
             df_report = pd.DataFrame(report_rows)
+            
+            # Filter report dynamically by classification category
+            if sel_class != "Todas as Categorias":
+                df_report = df_report[df_report["Categoria"] == sel_class]
+                
             st.dataframe(df_report, use_container_width=True, hide_index=True)
             
             # Download Markdown Report Option

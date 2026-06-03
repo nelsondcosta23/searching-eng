@@ -80,6 +80,7 @@ def get_company_rankings() -> List[Dict[str, Any]]:
             FROM jobs j
             LEFT JOIN companies c ON LOWER(j.empresa) = LOWER(c.name)
             WHERE j.status = 'Ativa' AND j.job_type != 'Non-tech'
+              AND j.empresa NOT IN ('Unknown', 'Not specified', '') AND j.empresa IS NOT NULL
             GROUP BY LOWER(j.empresa)
             ORDER BY open_positions DESC, j.empresa ASC
         """
