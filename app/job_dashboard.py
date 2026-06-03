@@ -5,6 +5,10 @@ import pandas as pd
 import os
 import sys
 
+# Add project root to path so we can import 'automation' modules
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
