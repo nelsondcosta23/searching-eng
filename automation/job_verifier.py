@@ -57,7 +57,7 @@ def verify_active_jobs():
             cursor = conn.execute(
                 "SELECT id, link, plataforma, titulo FROM jobs "
                 "WHERE status IN ('Ativa', 'Inacessível') "
-                "AND (data_scraped >= datetime('now', ?) OR data_scraped IS NULL)", (cutoff,)
+                "AND (data_scraped <= datetime('now', ?) OR data_scraped IS NULL)", (cutoff,)
             )
         else:
             cursor = conn.execute("SELECT id, link, plataforma, titulo FROM jobs WHERE status IN ('Ativa', 'Inacessível')")

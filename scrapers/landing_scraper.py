@@ -116,11 +116,19 @@ def _normalize_job(raw: dict) -> dict:
     }
 
 
-def _is_pt_or_remote(job: dict) -> bool:
-    """Keep only jobs based in PT or fully remote."""
-    if job['remote']:
-        return True
-    return any(cc.upper() == 'PT' for cc in job['country_codes'])
+_ALLOWED_COUNTRY_CODES = {'PT', 'GB', 'US'}
+
+def _is_target_country(job: dict) -> bool:
+    """Keep only jobs based in PT, GB (UK), or US — including remote roles
+    anchored to one of these countries. Remote jobs with no country_code or
+    with only foreign country codes (e.g. BR) are rejected."""
+    codes = {cc.upper() for cc in job['country_codes'] if cc}
+    if codes:
+        # Accept if at least one location is in the 3 target countries
+        return bool(codes & _ALLOWED_COUNTRY_CODES)
+    # No country_code at all: only accept if not marked as remote
+    # (a truly country-less, non-remote job is unlikely but treat as unknown → reject)
+    return False
 
 
 def _fetch_keyword_jobs(keyword: str) -> dict[str, dict]:
@@ -186,7 +194,7 @@ def iniciar_scraper_landing():
         if not job['titulo'] or not job['link']:
             continue
 
-        if not _is_pt_or_remote(job):
+        if not _is_target_country(job):
             continue
 
         if negative_keyword_match(job['titulo'].lower(), NEGATIVE_KEYWORDS):

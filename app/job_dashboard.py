@@ -18,6 +18,18 @@ import psutil
 import subprocess
 from datetime import datetime, timedelta
 
+# Country detection is now retrieved from DB column normalized_country
+
+@st.cache_data(ttl=60)
+def load_all_companies() -> pd.DataFrame:
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
+    try:
+        with contextlib.closing(sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)) as conn:
+            return pd.read_sql_query("SELECT name, inception_year, company_age FROM companies", conn)
+    except Exception:
+        return pd.DataFrame()
+
 st.set_page_config(
     page_title="Tech Job Market — Portugal",
     page_icon="🎯",
@@ -134,7 +146,8 @@ def load_all_jobs() -> pd.DataFrame:
             df = pd.read_sql_query('''
                 SELECT id, plataforma, titulo, empresa, localizacao, link,
                        salario, tipo_contrato, nivel_experiencia, job_type,
-                       status, recrutador_nome, recrutador_link, data_publicacao, data_scraped, posting_age_days
+                       status, recrutador_nome, recrutador_link, data_publicacao, data_scraped, posting_age_days,
+                       normalized_country
                 FROM jobs
                 WHERE job_type != 'Non-tech'
                 ORDER BY data_scraped DESC
@@ -178,22 +191,21 @@ def load_job_description(job_id: int) -> str:
     except Exception:
         return ''
 
-def get_last_run_timestamp() -> str:
-    """Gets the timestamp of the last job scraped."""
-    if not os.path.exists(DB_PATH):
-        return "N/A"
+def get_last_run_timestamp(df: pd.DataFrame) -> str:
+    """Gets the timestamp of the last job scraped from the filtered set."""
+    if df.empty or 'data_scraped' not in df.columns:
+        return "N/D"
     try:
-        with contextlib.closing(sqlite3.connect(DB_PATH)) as conn:
-            row = conn.execute("SELECT MAX(data_scraped) FROM jobs").fetchone()
-            if row and row[0]:
-                dt = datetime.strptime(row[0][:19], '%Y-%m-%d %H:%M:%S')
-                diff = datetime.now() - dt
-                if diff.days == 0:
-                    return f"Today at {dt.strftime('%H:%M')}"
-                return f"{diff.days} days ago"
+        max_scraped = df['data_scraped'].max()
+        if max_scraped:
+            dt = datetime.strptime(max_scraped[:19], '%Y-%m-%d %H:%M:%S')
+            diff = datetime.now() - dt
+            if diff.days == 0:
+                return f"Hoje às {dt.strftime('%H:%M')}"
+            return f"Há {diff.days} dias"
     except Exception:
         pass
-    return "N/A"
+    return "N/D"
 
 def is_scraper_running() -> bool:
     """Checks if there is a running orchestrator lock or subprocess."""
@@ -215,9 +227,19 @@ with st.sidebar:
     st.markdown("""
     <div style='padding:.2rem 0 .6rem;'>
       <div style='font-size:1.4rem;font-weight:900;color:#F3F4F6;'>🎯 Tech Job Market</div>
-      <div style='font-size:.65rem;color:#9CA3AF;font-weight:500;margin-top:.1rem;'>Portugal</div>
+      <div style='font-size:.65rem;color:#9CA3AF;font-weight:500;margin-top:.1rem;'>PT + UK + USA</div>
     </div>
     """, unsafe_allow_html=True)
+    
+    st.divider()
+    
+    st.markdown("<div style='font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;'>Filtro de País (Global)</div>", unsafe_allow_html=True)
+    sel_country = st.selectbox(
+        "País Selecionado",
+        ["Todos", "Portugal", "Reino Unido", "Estados Unidos"],
+        index=0,
+        label_visibility="collapsed"
+    )
     
     st.divider()
     
@@ -292,13 +314,53 @@ with st.sidebar:
 # Load Data
 # ─────────────────────────────────────────────────────────────────────────────
 df_jobs = load_all_jobs()
-df_rankings = load_company_analytics()
-df_job_types = load_job_type_dist()
+df_companies = load_all_companies()
+
+if not df_jobs.empty:
+    country_map = {
+        "United Kingdom": "Reino Unido",
+        "United States": "Estados Unidos"
+    }
+    df_jobs['pais'] = df_jobs['normalized_country'].replace(country_map).fillna("Outro")
+else:
+    df_jobs['pais'] = pd.Series(dtype='str')
+
+# Apply global country filter
+df_jobs_filtered = df_jobs.copy()
+if sel_country != "Todos":
+    df_jobs_filtered = df_jobs[df_jobs['pais'] == sel_country]
+
+# Active jobs for rankings and KPIs
+df_active = df_jobs_filtered[df_jobs_filtered['status'] == 'Ativa']
+
+# Compute rankings dynamically
+if df_active.empty:
+    df_rankings = pd.DataFrame(columns=["empresa", "open_positions", "inception_year", "company_age"])
+else:
+    df_counts = df_active.groupby('empresa').size().reset_index(name='open_positions')
+    df_counts['empresa_lower'] = df_counts['empresa'].str.lower()
+    if not df_companies.empty:
+        df_companies['name_lower'] = df_companies['name'].str.lower()
+        df_rankings = pd.merge(df_counts, df_companies, left_on='empresa_lower', right_on='name_lower', how='left')
+        df_rankings = df_rankings[['empresa', 'open_positions', 'inception_year', 'company_age']]
+    else:
+        df_rankings = df_counts.copy()
+        df_rankings['inception_year'] = None
+        df_rankings['company_age'] = None
+    df_rankings = df_rankings.sort_values(by=['open_positions', 'empresa'], ascending=[False, True])
+
+# Compute job type distribution dynamically
+if df_active.empty:
+    df_job_types = pd.DataFrame(columns=["job_type", "count"])
+else:
+    df_job_types = df_active.groupby('job_type').size().reset_index(name='count')
+    df_job_types = df_job_types.sort_values(by='count', ascending=False)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Header & KPI Row
 # ─────────────────────────────────────────────────────────────────────────────
-st.markdown("<div style='font-size:1.8rem;font-weight:900;color:#111827;margin-bottom:1rem;'>Tech Job Market — Portugal</div>", unsafe_allow_html=True)
+title_suffix = f" — {sel_country}" if sel_country != "Todos" else " — Global"
+st.markdown(f"<div style='font-size:1.8rem;font-weight:900;color:#111827;margin-bottom:1rem;'>Tech Job Market{title_suffix}</div>", unsafe_allow_html=True)
 
 if is_scraper_running():
     st.markdown("""
@@ -310,7 +372,7 @@ if is_scraper_running():
 c1, c2, c3, c4 = st.columns(4)
 
 with c1:
-    total_active = len(df_jobs) if not df_jobs.empty else 0
+    total_active = len(df_active) if not df_active.empty else 0
     st.markdown(f"""
     <div class='kpi-card'>
       <div class='kpi-label'>Active Tech Positions</div>
@@ -320,7 +382,7 @@ with c1:
     """, unsafe_allow_html=True)
 
 with c2:
-    total_companies = df_jobs['empresa'].nunique() if not df_jobs.empty else 0
+    total_companies = df_active['empresa'].nunique() if not df_active.empty else 0
     st.markdown(f"""
     <div class='kpi-card'>
       <div class='kpi-label'>Companies Hiring</div>
@@ -341,7 +403,7 @@ with c3:
     """, unsafe_allow_html=True)
 
 with c4:
-    freshness = get_last_run_timestamp()
+    freshness = get_last_run_timestamp(df_jobs_filtered)
     st.markdown(f"""
     <div class='kpi-card'>
       <div class='kpi-label'>Last Run Freshness</div>
@@ -364,22 +426,22 @@ with t1:
         if df_rankings.empty:
             st.info("Sem dados de ranking disponíveis. Execute o scraper primeiro.")
         else:
-            # We want to present: Company, Age, Open Tech positions, Job type list.
-            # Combine rankings with detail breakdowns.
-            try:
-                from automation.job_analytics import get_company_job_types
-                df_types = pd.DataFrame(get_company_job_types())
-            except Exception:
-                df_types = pd.DataFrame()
-            
-            # Pivot types to format nicely
+            # Compute company job types breakdown dynamically from df_active
             breakdown_dict = {}
-            if not df_types.empty:
-                for _, row in df_types.iterrows():
+            company_countries = {}
+            if not df_active.empty:
+                df_co_types = df_active.groupby(['empresa', 'job_type']).size().reset_index(name='count')
+                for _, row in df_co_types.iterrows():
                     co = row['empresa']
                     jt = row['job_type']
                     cnt = row['count']
                     breakdown_dict.setdefault(co, []).append(f"{jt} ({cnt})")
+                
+                for co, group in df_active.groupby('empresa'):
+                    unique_countries = sorted(group['pais'].dropna().unique().tolist())
+                    flags = {"Portugal": "🇵🇹 PT", "Reino Unido": "🇬🇧 UK", "Estados Unidos": "🇺🇸 USA", "Outro": "🌍 Outro"}
+                    unique_flags = [flags.get(c, c) for c in unique_countries]
+                    company_countries[co] = ", ".join(unique_flags)
             
             # Build pretty view dataframe
             report_rows = []
@@ -389,13 +451,15 @@ with t1:
                 founded = f"{int(row['inception_year'])}" if pd.notnull(row['inception_year']) else "—"
                 
                 # Fetch posting age stats
-                ages = df_jobs[df_jobs['empresa'].str.lower() == co.lower()]['posting_age_days'].dropna()
+                ages = df_active[df_active['empresa'].str.lower() == co.lower()]['posting_age_days'].dropna()
                 avg_age = f"{round(ages.mean(), 1)} dias" if not ages.empty else "N/D"
                 
                 breakdown_str = ", ".join(breakdown_dict.get(co, []))
+                countries_str = company_countries.get(co, "—")
                 
                 report_rows.append({
                     "Empresa": co,
+                    "País(es)": countries_str,
                     "Ano de Fundação": founded,
                     "Idade da Empresa": age,
                     "Nº de Vagas Tech": int(row['open_positions']),
@@ -553,7 +617,7 @@ with t2:
                 sel_status = f_c4.selectbox("Estado", ["Ativa", "Expirada", "Todas"], index=0, label_visibility="collapsed")
                 
             # Filter Dataframe
-            df_filtered = df_jobs.copy()
+            df_filtered = df_jobs_filtered.copy()
             
             if search_q:
                 q = search_q.lower()
@@ -590,12 +654,16 @@ with t2:
             if df_filtered.empty:
                 st.info("Nenhuma vaga corresponde aos filtros selecionados.")
             else:
-                display_cols = ["titulo", "empresa", "job_type", "link", "plataforma", "status", "data_publicacao", "posting_age_days"]
+                display_cols = ["titulo", "empresa", "job_type", "link", "plataforma", "status", "pais", "data_publicacao", "posting_age_days"]
                 df_show = df_filtered[display_cols].copy()
                 
                 # Clean platform display
                 df_show['plataforma'] = df_show['plataforma'].apply(lambda x: x.split('(')[0].strip())
                 df_show['posting_age_days'] = df_show['posting_age_days'].apply(lambda x: f"{int(x)} dias" if pd.notnull(x) else "Recente")
+                
+                # Format country representation
+                flags = {"Portugal": "🇵🇹 PT", "Reino Unido": "🇬🇧 UK", "Estados Unidos": "🇺🇸 USA", "Outro": "🌍 Outro"}
+                df_show['pais'] = df_show['pais'].apply(lambda x: flags.get(x, x))
                 
                 df_show.rename(columns={
                     "titulo": "Título",
@@ -604,6 +672,7 @@ with t2:
                     "link": "Link",
                     "plataforma": "Plataforma",
                     "status": "Estado",
+                    "pais": "País",
                     "data_publicacao": "Extraído em",
                     "posting_age_days": "Idade Estimada"
                 }, inplace=True)

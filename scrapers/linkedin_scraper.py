@@ -28,8 +28,8 @@ except ImportError as _e:
 from scrapers._shared import negative_keyword_match, new_pw_context, apply_stealth, strip_html
 
 MAX_JOBS = int(os.environ.get('MAX_JOBS_PER_PLATFORM', '0'))
-PRIORITY_PAGES   = int(os.environ.get('LINKEDIN_PRIORITY_PAGES', '4'))   # pages for priority queries
-STANDARD_PAGES   = int(os.environ.get('LINKEDIN_STANDARD_PAGES', '2'))   # pages for standard queries
+PRIORITY_PAGES   = int(os.environ.get('LINKEDIN_PRIORITY_PAGES', '2'))   # pages for priority queries
+STANDARD_PAGES   = int(os.environ.get('LINKEDIN_STANDARD_PAGES', '1'))   # pages for standard queries
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",

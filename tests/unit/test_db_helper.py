@@ -87,6 +87,29 @@ class TestSaveJob:
         assert row[4] == "Ana Recrutadora"
         assert row[5] == "https://linkedin.com/in/ana"
 
+    def test_normalized_country_resolution(self, tmp_db):
+        # 1. Portugal
+        db_mod.save_job("u", "P", "e1", "Job", "Co", "Lisboa", "https://example.com/pt-1")
+        # 2. UK
+        db_mod.save_job("u", "P", "e2", "Job", "Co", "London, UK", "https://example.com/uk-1")
+        # 3. USA
+        db_mod.save_job("u", "P", "e3", "Job", "Co", "New York, USA", "https://example.com/us-1")
+        # 4. Outro
+        db_mod.save_job("u", "P", "e4", "Job", "Co", "Berlin, Germany", "https://example.com/other-1")
+        # 5. Fallback portal
+        db_mod.save_job("u", "Sapo Jobs", "e5", "Job", "Co", "Remote", "https://example.com/sapo-1")
+
+        conn = sqlite3.connect(tmp_db)
+        rows = conn.execute("SELECT link, normalized_country FROM jobs ORDER BY link").fetchall()
+        conn.close()
+
+        mapping = dict(rows)
+        assert mapping["https://example.com/pt-1"] == "Portugal"
+        assert mapping["https://example.com/uk-1"] == "United Kingdom"
+        assert mapping["https://example.com/us-1"] == "United States"
+        assert mapping["https://example.com/other-1"] == "Outro"
+        assert mapping["https://example.com/sapo-1"] == "Portugal"
+
 
 # ── job_exists ────────────────────────────────────────────────────────────────
 

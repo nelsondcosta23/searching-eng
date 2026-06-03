@@ -2,6 +2,7 @@ import sqlite3
 import os
 import time
 import random
+import re
 import contextlib
 from datetime import datetime
 
@@ -109,6 +110,58 @@ def execute_with_retry(sql: str, params: tuple = (), max_attempts: int = _DEFAUL
                 conn.close()
     return -1  # unreachable
 
+def get_normalized_country(localizacao: str, plataforma: str) -> str:
+    if not localizacao:
+        return "Outro"
+    
+    loc = localizacao.lower()
+    
+    # 1. Portugal keywords
+    pt_keywords = [
+        "portugal", "lisboa", "lisbon", "porto", "coimbra", "braga", "aveiro",
+        "setubal", "setúbal", "cascais", "oeiras", "alges", "algés", "faro",
+        "leiria", "evora", "évora", "viana do castelo", "guarda", "castelo branco",
+        "bragança", "braganca", "beja", "portalegre", "santarém", "santarem",
+        "viseu", "vila real", "funchal", "ponta delgada", "açores", "azores", "madeira"
+    ]
+    if any(k in loc for k in pt_keywords):
+        return "Portugal"
+        
+    # 2. United Kingdom keywords
+    uk_keywords = [
+        "united kingdom", "reino unido", "london", "londres", "manchester", "birmingham",
+        "edinburgh", "glasgow", "leeds", "liverpool", "england", "scotland", "wales", "belfast",
+        "northern ireland", "cardiff", "bristol", "sheffield", "newcastle"
+    ]
+    if any(k in loc for k in uk_keywords):
+        return "United Kingdom"
+    if re.search(r'\b(uk|gb)\b', loc):
+        return "United Kingdom"
+        
+    # 3. United States keywords
+    us_keywords = [
+        "united states", "estados unidos", "usa", "new york", "nova york", "san francisco",
+        "california", "califórnia", "texas", "austin", "seattle", "boston", "chicago",
+        "washington", "los angeles", "atlanta", "miami", "denver", "colorado", "seattle",
+        "massachusetts", "illinois", "florida", "flórida", "pennsylvania", "pensilvânia",
+        "ohio", "michigan", "georgia", "geórgia", "north carolina", "carolina do norte",
+        "virginia", "virgínia", "arizona", "oregon", "utah", "minnesota", "minesota", "tennesse",
+        "tenessi", "tennessee", "portland", "philadelphia", "dallas", "houston", "san jose",
+        "são francisco", "sao francisco"
+    ]
+    if any(k in loc for k in us_keywords):
+        return "United States"
+    if re.search(r'\b(us)\b', loc):
+        return "United States"
+        
+    # Fallbacks based on portal
+    plat_lower = plataforma.lower()
+    if any(p in plat_lower for p in ["sapo", "itjobs", "expresso"]):
+        return "Portugal"
+        
+    return "Outro"
+
+
 def save_job(
     user_id: str,
     plataforma: str,
@@ -138,9 +191,10 @@ def save_job(
                 INSERT INTO jobs (
                     link, plataforma, id_externo, titulo, empresa, localizacao,
                     data_publicacao, data_scraped, salario, tipo_contrato,
-                    nivel_experiencia, descricao, observacoes, recrutador_nome, recrutador_link
+                    nivel_experiencia, descricao, observacoes, recrutador_nome, recrutador_link,
+                    normalized_country
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(link) DO UPDATE SET
                     descricao         = CASE WHEN COALESCE(excluded.descricao,         '') != '' AND COALESCE(descricao,         '') = '' THEN excluded.descricao         ELSE descricao         END,
                     observacoes       = CASE WHEN COALESCE(excluded.observacoes,       '') != '' AND COALESCE(observacoes,       '') = '' THEN excluded.observacoes       ELSE observacoes       END,
@@ -152,7 +206,8 @@ def save_job(
             ''', (
                 link, plataforma, id_externo, titulo, empresa, localizacao,
                 data_pub, data_agora, salario, tipo_contrato,
-                nivel_experiencia, descricao_completa, observacoes, recrutador_nome, recrutador_link
+                nivel_experiencia, descricao_completa, observacoes, recrutador_nome, recrutador_link,
+                get_normalized_country(localizacao, plataforma)
             ))
             conn.commit()
             return True

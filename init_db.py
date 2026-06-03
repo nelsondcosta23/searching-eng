@@ -44,6 +44,7 @@ try:
             recrutador_nome      TEXT,
             recrutador_link      TEXT,
             status               TEXT DEFAULT 'Ativa',
+            normalized_country   TEXT,
             CONSTRAINT unique_job_platform UNIQUE (plataforma, id_externo)
         )
     ''')
