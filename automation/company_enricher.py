@@ -25,11 +25,11 @@ def _clean_company_name(name: str) -> str:
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned if cleaned else name
 
-def fetch_inception_year(company_name: str) -> Tuple[Optional[int], Optional[str]]:
+def fetch_inception_year(company_name: str) -> Tuple[Optional[int], Optional[str], Optional[str]]:
     """Query the public Wikidata API for the company's inception year and description,
     verifying that the matched entity is indeed an organization/company (P31).
     
-    Returns (inception_year, description).
+    Returns (inception_year, description, entity_id).
     """
     headers = {
         'User-Agent': 'TechJobIntelligenceTool/1.0 (nelsonfilipecosta@gmail.com) Requests/2.0'
@@ -141,17 +141,17 @@ def fetch_inception_year(company_name: str) -> Tuple[Optional[int], Optional[str
             claims = claims_data.get("claims", {}).get("P571", [])
             if not claims:
                 # Cache description even if inception year is missing
-                return None, valid_description
+                return None, valid_description, valid_entity_id
                 
             time_val = claims[0].get("mainsnak", {}).get("datavalue", {}).get("value", {}).get("time")
             if time_val:
                 m = re.match(r'^[+-](\d{4})', time_val)
                 if m:
-                    return int(m.group(1)), valid_description
+                    return int(m.group(1)), valid_description, valid_entity_id
         except Exception as e:
             print(f"[company_enricher] API lookup failed for '{term}': {e}")
             
-    return None, None
+    return None, None, None
 
 def get_or_enrich_company(company_name: str) -> Tuple[Optional[int], Optional[int]]:
     """Fetch company details. First checks the local SQLite cache, then falls back to Wikidata.
@@ -190,7 +190,7 @@ def get_or_enrich_company(company_name: str) -> Tuple[Optional[int], Optional[in
         # 2. Call Wikidata API (uncached)
         # Apply slight rate-limiting delay for external requests
         time.sleep(0.5)
-        inception_year, description = fetch_inception_year(normalized_name)
+        inception_year, description, wikidata_qid = fetch_inception_year(normalized_name)
         
         company_age = None
         if inception_year is not None:
@@ -198,8 +198,8 @@ def get_or_enrich_company(company_name: str) -> Tuple[Optional[int], Optional[in
             
         # 3. Save to local cache
         conn.execute(
-            "INSERT OR REPLACE INTO companies (name, inception_year, company_age, description) VALUES (?, ?, ?, ?)",
-            (normalized_name, inception_year, company_age, description)
+            "INSERT OR REPLACE INTO companies (name, inception_year, company_age, description, wikidata_qid) VALUES (?, ?, ?, ?, ?)",
+            (normalized_name, inception_year, company_age, description, wikidata_qid)
         )
         conn.commit()
         return inception_year, company_age

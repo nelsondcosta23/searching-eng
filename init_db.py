@@ -57,6 +57,7 @@ try:
             inception_year       INTEGER,
             company_age          INTEGER,
             description          TEXT,
+            wikidata_qid         TEXT,
             last_updated         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')

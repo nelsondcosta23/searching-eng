@@ -44,6 +44,7 @@ def init_test_db(db_path: str) -> None:
             inception_year       INTEGER,
             company_age          INTEGER,
             description          TEXT,
+            wikidata_qid         TEXT,
             last_updated         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)

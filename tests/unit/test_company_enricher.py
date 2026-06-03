@@ -73,9 +73,10 @@ def test_fetch_inception_year(monkeypatch):
 
     mock_get.side_effect = [resp1, resp_p31, resp2]
 
-    year, desc = enricher_mod.fetch_inception_year("Google")
+    year, desc, qid = enricher_mod.fetch_inception_year("Google")
     assert year == 1998
     assert desc == "American technology company"
+    assert qid == "Q95"
 
 def test_get_or_enrich_company_cached(tmp_db):
     # Seed cache
