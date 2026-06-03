@@ -115,6 +115,8 @@ def get_normalized_country(localizacao: str, plataforma: str) -> str:
         return "Outro"
     
     loc = localizacao.lower()
+    # Normalize acronyms like u.s. -> us, u.k. -> uk to simplify regex matching
+    loc = loc.replace("u.s.a.", "usa").replace("u.s.", "us").replace("u.k.", "uk")
     
     # 1. Portugal keywords
     pt_keywords = [
@@ -122,9 +124,12 @@ def get_normalized_country(localizacao: str, plataforma: str) -> str:
         "setubal", "setúbal", "cascais", "oeiras", "alges", "algés", "faro",
         "leiria", "evora", "évora", "viana do castelo", "guarda", "castelo branco",
         "bragança", "braganca", "beja", "portalegre", "santarém", "santarem",
-        "viseu", "vila real", "funchal", "ponta delgada", "açores", "azores", "madeira"
+        "viseu", "vila real", "funchal", "ponta delgada", "açores", "azores", "madeira",
+        "loulé", "loule"
     ]
     if any(k in loc for k in pt_keywords):
+        return "Portugal"
+    if re.search(r'\b(pt)\b', loc):
         return "Portugal"
         
     # 2. United Kingdom keywords
@@ -142,12 +147,12 @@ def get_normalized_country(localizacao: str, plataforma: str) -> str:
     us_keywords = [
         "united states", "estados unidos", "usa", "new york", "nova york", "san francisco",
         "california", "califórnia", "texas", "austin", "seattle", "boston", "chicago",
-        "washington", "los angeles", "atlanta", "miami", "denver", "colorado", "seattle",
+        "washington", "los angeles", "atlanta", "miami", "denver", "colorado",
         "massachusetts", "illinois", "florida", "flórida", "pennsylvania", "pensilvânia",
         "ohio", "michigan", "georgia", "geórgia", "north carolina", "carolina do norte",
         "virginia", "virgínia", "arizona", "oregon", "utah", "minnesota", "minesota", "tennesse",
         "tenessi", "tennessee", "portland", "philadelphia", "dallas", "houston", "san jose",
-        "são francisco", "sao francisco"
+        "são francisco", "sao francisco", "columbus", "memphis", "nashville", "rochester"
     ]
     if any(k in loc for k in us_keywords):
         return "United States"
@@ -160,6 +165,7 @@ def get_normalized_country(localizacao: str, plataforma: str) -> str:
         return "Portugal"
         
     return "Outro"
+
 
 
 def save_job(
