@@ -29,6 +29,7 @@ def init_test_db(db_path: str) -> None:
             salario              TEXT,
             tipo_contrato        TEXT,
             nivel_experiencia    TEXT,
+            work_mode            TEXT,
             job_type             TEXT,
             descricao            TEXT,
             observacoes          TEXT,
@@ -38,6 +39,15 @@ def init_test_db(db_path: str) -> None:
             normalized_country   TEXT,
             CONSTRAINT unique_job_platform UNIQUE (plataforma, id_externo)
         );
+
+        CREATE TABLE IF NOT EXISTS job_skills (
+            job_id               INTEGER NOT NULL,
+            skill                TEXT NOT NULL,
+            PRIMARY KEY (job_id, skill),
+            FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_job_skills_skill ON job_skills(skill);
 
         CREATE TABLE IF NOT EXISTS companies (
             name                 TEXT PRIMARY KEY,

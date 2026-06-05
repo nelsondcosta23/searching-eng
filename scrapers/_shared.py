@@ -326,3 +326,96 @@ def make_session(
     sess.mount("http://", adapter)
     sess.headers.update(headers or DEFAULT_HEADERS)
     return sess
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Work Mode & Tech Skills Extraction
+# ─────────────────────────────────────────────────────────────────────────────
+_REMOTE_RE = re.compile(r'\b(remote|remoto|teletrabalho|anywhere|trabalho\s+a\s+partir\s+de\s+casa)\b', re.I)
+_HYBRID_RE = re.compile(r'\b(hybrid|h[íi]brido|regime\s+misto|trabalho\s+misto)\b', re.I)
+_ONSITE_RE = re.compile(r'\b(onsite|on-site|presencial|no\s+escrit[oó]rio)\b', re.I)
+
+_TECH_SKILLS = {
+    "PYTHON": re.compile(r'\bpython\b', re.I),
+    "JAVASCRIPT": re.compile(r'\bjavascript\b', re.I),
+    "TYPESCRIPT": re.compile(r'\btypescript\b', re.I),
+    "REACT": re.compile(r'\breact\b', re.I),
+    "ANGULAR": re.compile(r'\bangular\b', re.I),
+    "VUE": re.compile(r'\bvue\b', re.I),
+    "NODE.JS": re.compile(r'\bnode(?:\.js)?\b', re.I),
+    "JAVA": re.compile(r'\bjava\b', re.I),
+    "C#": re.compile(r'\bc#(?!\w)', re.I),
+    ".NET": re.compile(r'(?<!\w)\.net(?!\w)', re.I),
+    "C++": re.compile(r'\bc\+\+(?!\w)', re.I),
+    "GOLANG": re.compile(r'\bgolang\b|\bgo\s+(?:programming|language)\b', re.I),
+    "RUST": re.compile(r'\brust\b', re.I),
+    "PHP": re.compile(r'\bphp\b', re.I),
+    "RUBY": re.compile(r'\bruby\b', re.I),
+    "SCALA": re.compile(r'\bscala\b', re.I),
+    "KOTLIN": re.compile(r'\bkotlin\b', re.I),
+    "SWIFT": re.compile(r'\bswift\b', re.I),
+    "DART": re.compile(r'\bdart\b', re.I),
+    "FLUTTER": re.compile(r'\bflutter\b', re.I),
+    "REACT NATIVE": re.compile(r'\breact-native\b', re.I),
+    "SQL": re.compile(r'\bsql\b', re.I),
+    "POSTGRESQL": re.compile(r'\bpostgre(?:sql)?\b', re.I),
+    "MYSQL": re.compile(r'\bmysql\b', re.I),
+    "MONGODB": re.compile(r'\bmongodb\b', re.I),
+    "REDIS": re.compile(r'\bredis\b', re.I),
+    "AWS": re.compile(r'\baws\b', re.I),
+    "AZURE": re.compile(r'\bazure\b', re.I),
+    "GCP": re.compile(r'\bgcp\b|google\s+cloud', re.I),
+    "DOCKER": re.compile(r'\bdocker\b', re.I),
+    "KUBERNETES": re.compile(r'\bkubernetes\b|\bk8s\b', re.I),
+    "TERRAFORM": re.compile(r'\bterraform\b', re.I),
+    "ANSIBLE": re.compile(r'\bansible\b', re.I),
+    "JENKINS": re.compile(r'\bjenkins\b', re.I),
+    "GIT": re.compile(r'\bgit\b', re.I),
+    "LINUX": re.compile(r'\blinux\b', re.I),
+    "CI/CD": re.compile(r'\bci/cd\b', re.I),
+    "GRAPHQL": re.compile(r'\bgraphql\b', re.I),
+    "REST API": re.compile(r'\brest\s+api\b', re.I),
+    "MICROSERVICES": re.compile(r'\bmicroservices\b', re.I),
+    "MACHINE LEARNING": re.compile(r'\bmachine\s+learning\b', re.I),
+    "ARTIFICIAL INTELLIGENCE": re.compile(r'\bartificial\s+intelligence\b', re.I),
+}
+
+
+def extract_work_mode(localizacao: str, titulo: str, descricao: str) -> str:
+    """Infer work mode (Remote, Hybrid, On-site) from location, title, or description.
+    Returns 'Remote', 'Hybrid', 'On-site', or '' if not specified.
+    """
+    loc = localizacao or ''
+    title = titulo or ''
+    desc = (descricao or '')[:1000]
+
+    # 1. Check location and title first (higher precision)
+    if _REMOTE_RE.search(loc) or _REMOTE_RE.search(title):
+        return 'Remote'
+    if _HYBRID_RE.search(loc) or _HYBRID_RE.search(title):
+        return 'Hybrid'
+    if _ONSITE_RE.search(loc) or _ONSITE_RE.search(title):
+        return 'On-site'
+
+    # 2. Check description (fallback)
+    if _REMOTE_RE.search(desc):
+        return 'Remote'
+    if _HYBRID_RE.search(desc):
+        return 'Hybrid'
+    if _ONSITE_RE.search(desc):
+        return 'On-site'
+
+    return ''
+
+
+def extract_skills(titulo: str, descricao: str) -> list[str]:
+    """Scan title and description for a curated list of technology skills.
+    Returns a sorted list of matched normalized skill names.
+    """
+    text = f"{titulo or ''} {descricao or ''}"
+    matched = []
+    for skill_name, pattern in _TECH_SKILLS.items():
+        if pattern.search(text):
+            matched.append(skill_name)
+    return sorted(matched)
+

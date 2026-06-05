@@ -185,8 +185,30 @@ def save_job(
     salario: str = "",
     tipo_contrato: str = "",
     nivel_experiencia: str = "",
+    work_mode: str = "",
 ) -> bool:
-    """Write to jobs table (upsert). Returns True if saved or updated, False otherwise."""
+    """Write to jobs table (upsert) and populate job_skills. Returns True if saved or updated, False otherwise."""
+    from scrapers._shared import (
+        extract_seniority,
+        extract_salary_from_text,
+        extract_work_mode,
+        extract_skills,
+    )
+
+    # 1. Dynamic extraction and backfilling for empty parameters
+    desc_clean = descricao_completa or ""
+
+    if not nivel_experiencia or nivel_experiencia.strip() == "":
+        nivel_experiencia = extract_seniority(titulo, desc_clean)
+
+    if not salario or salario.strip() == "":
+        salario = extract_salary_from_text(desc_clean)
+
+    if not work_mode or work_mode.strip() == "":
+        work_mode = extract_work_mode(localizacao, titulo, desc_clean)
+
+    skills = extract_skills(titulo, desc_clean)
+
     data_agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     for attempt in range(_DEFAULT_RETRIES):
         conn = None
@@ -197,24 +219,36 @@ def save_job(
                 INSERT INTO jobs (
                     link, plataforma, id_externo, titulo, empresa, localizacao,
                     data_publicacao, data_scraped, salario, tipo_contrato,
-                    nivel_experiencia, descricao, observacoes, recrutador_nome, recrutador_link,
+                    nivel_experiencia, work_mode, descricao, observacoes, recrutador_nome, recrutador_link,
                     normalized_country
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(link) DO UPDATE SET
                     descricao         = CASE WHEN COALESCE(excluded.descricao,         '') != '' AND COALESCE(descricao,         '') = '' THEN excluded.descricao         ELSE descricao         END,
                     observacoes       = CASE WHEN COALESCE(excluded.observacoes,       '') != '' AND COALESCE(observacoes,       '') = '' THEN excluded.observacoes       ELSE observacoes       END,
                     salario           = CASE WHEN COALESCE(excluded.salario,           '') != '' AND COALESCE(salario,           '') = '' THEN excluded.salario           ELSE salario           END,
                     tipo_contrato     = CASE WHEN COALESCE(excluded.tipo_contrato,     '') != '' AND COALESCE(tipo_contrato,     '') = '' THEN excluded.tipo_contrato     ELSE tipo_contrato     END,
                     nivel_experiencia = CASE WHEN COALESCE(excluded.nivel_experiencia, '') != '' AND COALESCE(nivel_experiencia, '') = '' THEN excluded.nivel_experiencia ELSE nivel_experiencia END,
+                    work_mode         = CASE WHEN COALESCE(excluded.work_mode,         '') != '' AND COALESCE(work_mode,         '') = '' THEN excluded.work_mode         ELSE work_mode         END,
                     recrutador_nome   = CASE WHEN COALESCE(excluded.recrutador_nome,   '') != '' AND COALESCE(recrutador_nome,   '') = '' THEN excluded.recrutador_nome   ELSE recrutador_nome   END,
                     recrutador_link   = CASE WHEN COALESCE(excluded.recrutador_link,   '') != '' AND COALESCE(recrutador_link,   '') = '' THEN excluded.recrutador_link   ELSE recrutador_link   END
             ''', (
                 link, plataforma, id_externo, titulo, empresa, localizacao,
                 data_pub, data_agora, salario, tipo_contrato,
-                nivel_experiencia, descricao_completa, observacoes, recrutador_nome, recrutador_link,
+                nivel_experiencia, work_mode, desc_clean, observacoes, recrutador_nome, recrutador_link,
                 get_normalized_country(localizacao, plataforma)
             ))
+
+            # Fetch the job's primary key ID to map relational skills
+            row = conn.execute('SELECT id FROM jobs WHERE link = ?', (link,)).fetchone()
+            if row:
+                job_id = row[0]
+                # Sync skills (delete old, insert new)
+                conn.execute('DELETE FROM job_skills WHERE job_id = ?', (job_id,))
+                if skills:
+                    skill_params = [(job_id, s) for s in skills]
+                    conn.executemany('INSERT INTO job_skills (job_id, skill) VALUES (?, ?)', skill_params)
+
             conn.commit()
             return True
         except sqlite3.OperationalError as e:

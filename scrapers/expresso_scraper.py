@@ -191,6 +191,13 @@ def iniciar_scraper_expresso():
     print(f"  Keywords: {KEYWORDS}")
     print(f"{'='*55}")
 
+    # Check for Xvfb display availability on Linux (Docker container environment)
+    if sys.platform.startswith('linux'):
+        display = os.environ.get('DISPLAY', '').strip()
+        if not display:
+            print("❌ Expresso Fatal: Xvfb display not available — Expresso scraper aborted")
+            return
+
     ctx = None
     main_page = None
     try:

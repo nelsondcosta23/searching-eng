@@ -1,6 +1,12 @@
 """Unit tests for scrapers/_shared.py helper functions."""
 import pytest
-from scrapers._shared import negative_keyword_match, extract_seniority, extract_salary_from_text
+from scrapers._shared import (
+    negative_keyword_match,
+    extract_seniority,
+    extract_salary_from_text,
+    extract_work_mode,
+    extract_skills,
+)
 
 
 # ── negative_keyword_match ───────────────────────────────────────────────────
@@ -138,3 +144,78 @@ class TestExtractSalaryFromText:
         text = "We offer €60k per year. " + "description " * 50
         result = extract_salary_from_text(text)
         assert result != ""
+
+
+# ── extract_work_mode ────────────────────────────────────────────────────────
+
+class TestExtractWorkMode:
+    def test_remote_from_location(self):
+        assert extract_work_mode("Remote, Portugal", "Software Engineer", "") == "Remote"
+        assert extract_work_mode("remoto", "Developer", "") == "Remote"
+
+    def test_remote_from_title(self):
+        assert extract_work_mode("Lisboa", "Remote Python Developer", "") == "Remote"
+
+    def test_remote_from_description(self):
+        desc = "This is a teletrabalho position."
+        assert extract_work_mode("Lisbon", "Developer", desc) == "Remote"
+
+    def test_hybrid_from_location(self):
+        assert extract_work_mode("Híbrido - Porto", "Engineer", "") == "Hybrid"
+        assert extract_work_mode("hybrid", "Dev", "") == "Hybrid"
+
+    def test_hybrid_from_description(self):
+        desc = "We follow a regime misto work policy."
+        assert extract_work_mode("Lisbon", "Dev", desc) == "Hybrid"
+
+    def test_onsite_from_title(self):
+        assert extract_work_mode("Lisbon", "Presencial C# Developer", "") == "On-site"
+
+    def test_onsite_from_description(self):
+        desc = "This role requires being onsite at our office."
+        assert extract_work_mode("Lisbon", "Dev", desc) == "On-site"
+
+    def test_not_specified(self):
+        assert extract_work_mode("Lisbon", "Python Developer", "Join our team!") == ""
+
+
+# ── extract_skills ───────────────────────────────────────────────────────────
+
+class TestExtractSkills:
+    def test_basic_skills_extraction(self):
+        desc = "We need a Python developer who knows React and SQL."
+        skills = extract_skills("Backend Developer", desc)
+        assert "PYTHON" in skills
+        assert "REACT" in skills
+        assert "SQL" in skills
+        assert len(skills) == 3
+
+    def test_dotnet_isolation(self):
+        desc = "Looking for a .NET developer. Should not match internet."
+        skills = extract_skills("Dev", desc)
+        assert ".NET" in skills
+        assert len(skills) == 1
+
+    def test_golang_safeguard(self):
+        # Should match Golang
+        assert "GOLANG" in extract_skills("Golang Developer", "")
+        # Should not match common "go" verb
+        assert "GOLANG" not in extract_skills("Go to school", "we will go above and beyond")
+
+    def test_case_insensitivity(self):
+        assert "TYPESCRIPT" in extract_skills("typescript dev", "")
+        assert "TYPESCRIPT" in extract_skills("TYPESCRIPT DEV", "")
+
+    def test_c_sharp_and_c_plus_plus_extraction(self):
+        # Verify C# is extracted correctly (even with trailing punctuation or spaces)
+        assert "C#" in extract_skills("C# Developer", "experience in C#.")
+        assert "C#" in extract_skills("Looking for a C# developer", "")
+        
+        # Verify C++ is extracted correctly
+        assert "C++" in extract_skills("C++ Developer", "must know C++")
+        assert "C++" in extract_skills("We use C++, Python, and Java", "")
+        
+        # Verify negative isolation (no collision with other words)
+        assert "C#" not in extract_skills("Topic #1", "No C language mentioned here")
+        assert "C++" not in extract_skills("Topic ++", "C language")
+

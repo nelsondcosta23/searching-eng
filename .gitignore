@@ -1,25 +1,40 @@
 # =======================================================
 # Python
+# =======================================================
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
+.pytest_cache/
+.ruff_cache/
 
-# Configuração sensível (NUNCA fazer commit!)
+# =======================================================
+# Sensível (NUNCA commit!)
+# =======================================================
 .env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example
 
-# Base de dados (gerada automaticamente pelos scrapers)
+# =======================================================
+# Base de Dados & Backups
+# =======================================================
 database/
 *.db
 *.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
 
-# Runtime locks (criados pelo orchestrator, eliminados no fim de cada run)
-database/orchestrator.lock
-database/user_locks/
-
-# Logs e Ficheiros de Debug dos Scrapers
+# =======================================================
+# Logs & debug screenshots
+# =======================================================
 logs/
 *.log
 *_error_page.html
@@ -28,37 +43,53 @@ logs/
 *_screenshot*.png
 *_debug*.png
 
-# Ficheiros temporários de desenvolvimento
-tmp_*.py
+# =======================================================
+# Temporários
+# =======================================================
 tmp/
+tmp_*.py
 *.tmp
-
-# Perfil do utilizador (dados privados da API)
 profile.json
 profile_cache.json
+scratch/
 
-# IDE / Sistema
+# =======================================================
+# IDEs & System
+# =======================================================
 .vscode/
 .idea/
+.settings/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
 Thumbs.db
 .DS_Store
 .gemini/
 
-# Scripts temporários e de debug (apenas na raiz do repositório)
+# =======================================================
+# Scripts temporários na raiz
+# =======================================================
 /get_url.py
 /inspect_db.py
 /test_*.py
 /seed_*.py
 /fix_*.py
 /debug_*.py
-scratch/
 
-# Documentação descartada
+# =======================================================
+# Documentação interna
+# =======================================================
 CLOUDFLARE_FIXED_DOMAIN_GUIDE.md
-
-# Pytest cache
-.pytest_cache/
-
-# Claude Code — configurações locais e worktrees de sessão
 .claude/settings.local.json
 .claude/worktrees/
+
+# =======================================================
+# Test screenshots, scan logs & data exports
+# =======================================================
+screenshot_*.png
+secrets_scan_*.txt
+secrets_scan_results.txt
+probe_results*.json
+*.csv

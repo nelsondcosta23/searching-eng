@@ -65,9 +65,9 @@ _NON_EU_EXCLUDE = re.compile(
     r"\b(brazil|brasil|argentina|mexico|méxico|colombia|chile|peru|venezuela|"
     r"philippines|india|indonesia|china|japan|singapore|malaysia|vietnam|"
     r"thailand|south africa|kenya|nigeria|egypt|morocco|"
-    r"usa|united states|canada|australia|new zealand|"
-    r"latam|apac|americas|north america|south america)\b"
-    r"|remote\s*[-–—,]\s*(us|usa|united\s*states|canada|brazil|brasil|americas|"
+    r"canada|australia|new zealand|"
+    r"latam|apac|americas|south america)\b"
+    r"|remote\s*[-–—,]\s*(canada|brazil|brasil|americas|"
     r"latam|apac|asia|china|japan|india|philippines)\b",
     re.I,
 )

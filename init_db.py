@@ -38,6 +38,7 @@ try:
             salario              TEXT,
             tipo_contrato        TEXT,
             nivel_experiencia    TEXT,
+            work_mode            TEXT,
             job_type             TEXT,
             descricao            TEXT,
             observacoes          TEXT,
@@ -46,6 +47,24 @@ try:
             status               TEXT DEFAULT 'Ativa',
             normalized_country   TEXT,
             CONSTRAINT unique_job_platform UNIQUE (plataforma, id_externo)
+        )
+    ''')
+
+    # Safe migration: Alter jobs table to add work_mode if migrating an existing DB
+    try:
+        cursor.execute("ALTER TABLE jobs ADD COLUMN work_mode TEXT")
+        print("  Migration: Added 'work_mode' column to 'jobs' table.")
+    except sqlite3.OperationalError:
+        pass
+
+    # Create the 'job_skills' table for relational tech skills mapping
+    print("Creating 'job_skills' table...")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS job_skills (
+            job_id               INTEGER NOT NULL,
+            skill                TEXT NOT NULL,
+            PRIMARY KEY (job_id, skill),
+            FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
         )
     ''')
 
@@ -69,6 +88,7 @@ try:
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_jobs_job_type ON jobs(job_type)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_jobs_data_scraped ON jobs(data_scraped)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_job_skills_skill ON job_skills(skill)')
 
     conn.commit()
     print("Database successfully initialized!")

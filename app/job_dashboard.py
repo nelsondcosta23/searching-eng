@@ -157,7 +157,7 @@ def load_all_jobs() -> pd.DataFrame:
             conn.execute('PRAGMA journal_mode=WAL;')
             df = pd.read_sql_query('''
                 SELECT id, plataforma, titulo, empresa, localizacao, link,
-                       salario, tipo_contrato, nivel_experiencia, job_type,
+                       salario, tipo_contrato, nivel_experiencia, work_mode, job_type,
                        status, recrutador_nome, recrutador_link, data_publicacao, data_scraped, posting_age_days,
                        normalized_country
                 FROM jobs
@@ -167,6 +167,31 @@ def load_all_jobs() -> pd.DataFrame:
             return df
     except Exception as e:
         st.error(f"Error loading jobs: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=60)
+def load_company_sectors() -> dict:
+    """Loads company sector mappings from config/company_sectors.json."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "company_sectors.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return {k.lower().strip(): v for k, v in json.load(f).items()}
+        except Exception:
+            pass
+    return {}
+
+@st.cache_data(ttl=30)
+def load_job_skills() -> pd.DataFrame:
+    """Loads all job-to-skill mappings from job_skills table."""
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
+    try:
+        with contextlib.closing(sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)) as conn:
+            conn.execute('PRAGMA journal_mode=WAL;')
+            return pd.read_sql_query("SELECT job_id, skill FROM job_skills", conn)
+    except Exception as e:
+        st.error(f"Error loading job skills: {e}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=60)
@@ -235,6 +260,55 @@ def is_scraper_running() -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar Controls & Scraper trigger
 # ─────────────────────────────────────────────────────────────────────────────
+@st.dialog("Pipeline de Recolha de Vagas", width="large")
+def run_scraper_dialog(selected_platform: str):
+    st.markdown(f"### 🚀 Recolha de Vagas — {selected_platform}")
+    st.markdown("O scraper está a executar em segundo plano. Poderá acompanhar o progresso em tempo real na consola abaixo:")
+    
+    param_map = {
+        "All Scrapers": "",
+        "LinkedIn PT": "linkedin",
+        "Sapo Jobs": "sapo",
+        "Indeed PT": "indeed",
+        "ITJobs": "itjobs",
+        "Companies": "companies",
+        "Landing.jobs": "landing",
+        "Expresso Jobs": "expresso"
+    }
+    param = param_map[selected_platform]
+    cmd = [sys.executable, "-u", "automation/orchestrator.py"]
+    if param:
+        cmd.extend(["--scrapers", param])
+        
+    status_ph = st.empty()
+    status_ph.info("🔄 Inicializando os scrapers e ligando à base de dados...")
+    
+    log_ph = st.empty()
+    log_lines = []
+    
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1
+    )
+    
+    # Read output line by line as it is written to stdout
+    for line in proc.stdout:
+        log_lines.append(line)
+        # Keep the code block within readable limits (show last 30 lines)
+        log_ph.code("".join(log_lines[-30:]), language="bash")
+        
+    proc.wait()
+    
+    if proc.returncode == 0:
+        status_ph.success("✅ **Recolha e análise concluídas com sucesso!**")
+        st.cache_data.clear()
+        if st.button("Fechar e Atualizar Dashboard", type="primary", use_container_width=True):
+            st.rerun()
+    else:
+        status_ph.error(f"❌ **Ocorreu um erro na recolha.** (Código de saída: {proc.returncode})")
+        if st.button("Fechar", use_container_width=True):
+            st.rerun()
+
 with st.sidebar:
     st.markdown("""
     <div style='padding:.2rem 0 .6rem;'>
@@ -266,51 +340,9 @@ with st.sidebar:
     
     if run_btn:
         if is_scraper_running():
-            st.warning("Scraper is already running! Please wait.")
+            st.warning("O scraper já está a correr! Por favor, aguarde que o processo atual termine.")
         else:
-            # Map friendly option name to script parameter
-            param_map = {
-                "All Scrapers": "",
-                "LinkedIn PT": "linkedin",
-                "Sapo Jobs": "sapo",
-                "Indeed PT": "indeed",
-                "ITJobs": "itjobs",
-                "Companies": "companies",
-                "Landing.jobs": "landing",
-                "Expresso Jobs": "expresso"
-            }
-            param = param_map[selected_platform]
-            cmd = [sys.executable, "-u", "automation/orchestrator.py"]
-            if param:
-                cmd.extend(["--scrapers", param])
-                
-            st.info(f"Running scraper subprocess...")
-            with st.status("Scraping in progress...", expanded=True) as status:
-                log_ph = st.empty()
-                log_lines = []
-                
-                # Execute orchestrator as a subprocess and stream output
-                proc = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1
-                )
-                
-                for line in proc.stdout:
-                    log_lines.append(line)
-                    # Keep output display readable (show last 50 lines)
-                    log_ph.code("".join(log_lines[-50:]), language="bash")
-                    
-                proc.wait()
-                
-                if proc.returncode == 0:
-                    status.update(label="Scraping & Analysis Completed!", state="complete")
-                    st.success("Successfully finished run!")
-                    # Clear caches so display updates immediately
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    status.update(label="Run Failed", state="error")
-                    st.error(f"Scraper returned error code {proc.returncode}")
+            run_scraper_dialog(selected_platform)
 
     st.divider()
     
@@ -327,6 +359,8 @@ with st.sidebar:
 # ─────────────────────────────────────────────────────────────────────────────
 df_jobs = load_all_jobs()
 df_companies = load_all_companies()
+df_skills = load_job_skills()
+sectors_map = load_company_sectors()
 
 if not df_jobs.empty:
     country_map = {
@@ -334,8 +368,16 @@ if not df_jobs.empty:
         "United States": "Estados Unidos"
     }
     df_jobs['pais'] = df_jobs['normalized_country'].replace(country_map).fillna("Outro")
+    
+    # Map skills per job
+    if not df_skills.empty:
+        skills_grouped = df_skills.groupby('job_id')['skill'].apply(lambda x: ", ".join(sorted(list(x)))).to_dict()
+    else:
+        skills_grouped = {}
+    df_jobs['competencias'] = df_jobs['id'].map(skills_grouped).fillna('')
 else:
     df_jobs['pais'] = pd.Series(dtype='str')
+    df_jobs['competencias'] = pd.Series(dtype='str')
 
 # Apply global country filter
 df_jobs_filtered = df_jobs.copy()
@@ -445,19 +487,67 @@ with t1:
         )
         cat_counts = df_active_ranking['class_cat'].value_counts()
         tot = len(df_active_ranking)
-        pct_emp = (cat_counts.get("Empregador Direto", 0) / tot) * 100
-        pct_con = (cat_counts.get("Consultora IT", 0) / tot) * 100
-        pct_age = (cat_counts.get("Agência/Intermediário", 0) / tot) * 100
-        pct_noc = (cat_counts.get("Não classificada", 0) / tot) * 100
+        tot_classified = cat_counts.get("Empregador Direto", 0) + cat_counts.get("Consultora IT", 0) + cat_counts.get("Agência/Intermediário", 0)
+        
+        if tot_classified > 0:
+            pct_emp = (cat_counts.get("Empregador Direto", 0) / tot_classified) * 100
+            pct_con = (cat_counts.get("Consultora IT", 0) / tot_classified) * 100
+            pct_age = (cat_counts.get("Agência/Intermediário", 0) / tot_classified) * 100
+        else:
+            pct_emp = pct_con = pct_age = 0.0
+            
+        if tot > 0:
+            pct_emp_tot = (cat_counts.get("Empregador Direto", 0) / tot) * 100
+            pct_con_tot = (cat_counts.get("Consultora IT", 0) / tot) * 100
+            pct_age_tot = (cat_counts.get("Agência/Intermediário", 0) / tot) * 100
+            pct_noc = (cat_counts.get("Não classificada", 0) / tot) * 100
+        else:
+            pct_emp_tot = pct_con_tot = pct_age_tot = pct_noc = 0.0
     else:
         pct_emp = pct_con = pct_age = pct_noc = 0.0
+        pct_emp_tot = pct_con_tot = pct_age_tot = 0.0
+        tot_classified = 0
+        cat_counts = {}
+        tot = 0
         
-    st.markdown("<div style='font-size:1rem;font-weight:700;color:#374151;margin-bottom:0.6rem;'>Repartição do Mercado (Vagas Ativas)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='font-size:1rem;font-weight:700;color:#374151;margin-bottom:0.6rem;'>Repartição do Mercado (Classificadas: {tot_classified} vagas | Total: {tot} vagas)</div>", unsafe_allow_html=True)
     pct_cols = st.columns(4)
-    pct_cols[0].metric("🏢 Empregadores Diretos", f"{pct_emp:.1f}%")
-    pct_cols[1].metric("💼 Consultoras IT", f"{pct_con:.1f}%")
-    pct_cols[2].metric("👥 Agências/Intermediários", f"{pct_age:.1f}%")
-    pct_cols[3].metric("❓ Não Classificadas", f"{pct_noc:.1f}%")
+    with pct_cols[0]:
+        st.markdown(f"""
+        <div class='kpi-card'>
+          <div class='kpi-label'>🏢 Empregador Direto</div>
+          <div class='kpi-value'>{pct_emp:.1f}%</div>
+          <div class='kpi-sub'><b>{pct_emp_tot:.1f}%</b> do total ({int(cat_counts.get('Empregador Direto', 0))} vagas)</div>
+          <div style='font-size:0.7rem;color:#9CA3AF;margin-top:2px;'>do universo classificado</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with pct_cols[1]:
+        st.markdown(f"""
+        <div class='kpi-card'>
+          <div class='kpi-label'>💼 Consultora IT</div>
+          <div class='kpi-value'>{pct_con:.1f}%</div>
+          <div class='kpi-sub'><b>{pct_con_tot:.1f}%</b> do total ({int(cat_counts.get('Consultora IT', 0))} vagas)</div>
+          <div style='font-size:0.7rem;color:#9CA3AF;margin-top:2px;'>do universo classificado</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with pct_cols[2]:
+        st.markdown(f"""
+        <div class='kpi-card'>
+          <div class='kpi-label'>👥 Agência / Interm.</div>
+          <div class='kpi-value'>{pct_age:.1f}%</div>
+          <div class='kpi-sub'><b>{pct_age_tot:.1f}%</b> do total ({int(cat_counts.get('Agência/Intermediário', 0))} vagas)</div>
+          <div style='font-size:0.7rem;color:#9CA3AF;margin-top:2px;'>do universo classificado</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with pct_cols[3]:
+        st.markdown(f"""
+        <div class='kpi-card'>
+          <div class='kpi-label'>❓ Não Classificadas</div>
+          <div class='kpi-value'>{pct_noc:.1f}%</div>
+          <div class='kpi-sub'><b>{int(cat_counts.get('Não classificada', 0))} vagas</b> sem categoria</div>
+          <div style='font-size:0.7rem;color:#9CA3AF;margin-top:2px;'>do total de vagas</div>
+        </div>
+        """, unsafe_allow_html=True)
     st.divider()
 
     col_l, col_r = st.columns([0.65, 0.35], gap="large")
@@ -507,9 +597,13 @@ with t1:
                 # Look up category classification
                 category = classifications.get(co.lower().strip(), "Não classificada")
                 
+                # Look up sector mapping
+                sector = sectors_map.get(co.lower().strip(), "Desconhecido")
+                
                 report_rows.append({
                     "Empresa": co,
                     "Categoria": category,
+                    "Setor": sector,
                     "País(es)": countries_str,
                     "Ano de Fundação": founded,
                     "Idade da Empresa": age,
@@ -557,6 +651,41 @@ with t1:
                 hide_index=True
             )
 
+    # Additional Analytics Section at the bottom of Tab 1
+    st.divider()
+    chart_col1, chart_col2 = st.columns(2, gap="large")
+    
+    with chart_col1:
+        st.markdown("### Regime de Trabalho (Vagas Ativas)")
+        if df_active.empty:
+            st.info("Sem dados de regime de trabalho disponíveis.")
+        else:
+            df_wm = df_active['work_mode'].replace({"": "Não especificado"}).fillna("Não especificado").value_counts().reset_index()
+            df_wm.columns = ["Regime", "Vagas"]
+            st.bar_chart(
+                df_wm.set_index("Regime")["Vagas"],
+                color="#0D9488"
+            )
+            st.dataframe(df_wm, use_container_width=True, hide_index=True)
+            
+    with chart_col2:
+        st.markdown("### Tecnologias mais Procuradas (Top 15)")
+        if df_active.empty or df_skills.empty:
+            st.info("Sem competências disponíveis para analisar.")
+        else:
+            active_ids = df_active['id']
+            df_active_skills = df_skills[df_skills['job_id'].isin(active_ids)]
+            if df_active_skills.empty:
+                st.info("Nenhuma competência associada às vagas ativas.")
+            else:
+                top_skills = df_active_skills['skill'].value_counts().head(15).reset_index()
+                top_skills.columns = ["Tecnologia", "Vagas"]
+                st.bar_chart(
+                    top_skills.set_index("Tecnologia")["Vagas"],
+                    color="#4F46E5"
+                )
+                st.dataframe(top_skills, use_container_width=True, hide_index=True)
+
 # Tab 2: Job Explorer & Details
 with t2:
     if df_jobs.empty:
@@ -585,6 +714,15 @@ with t2:
                     st.rerun()
                 
                 # Header Title Card
+                job_skills_list = []
+                if not df_skills.empty:
+                    job_skills_list = df_skills[df_skills['job_id'] == v['id']]['skill'].tolist()
+                
+                skills_html = ""
+                if job_skills_list:
+                    pills = "".join(f"<span class='detail-pill pill-blue' style='margin-right:.3rem;margin-top:.3rem;'>{s}</span>" for s in job_skills_list)
+                    skills_html = f"<div style='margin-top:.8rem;display:flex;flex-wrap:wrap;align-items:center;'><span style='font-size:.75rem;font-weight:700;color:#6B7280;margin-right:.6rem;text-transform:uppercase;'>Competências:</span>{pills}</div>"
+
                 st.markdown(f"""
                 <div class='detail-header'>
                   <div style='display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.5rem;'>
@@ -601,18 +739,24 @@ with t2:
                       <span class='detail-pill pill-green'>{v['plataforma'].split('(')[0].strip()}</span>
                     </div>
                   </div>
+                  {skills_html}
                 </div>
                 """, unsafe_allow_html=True)
                 
                 # Info Tiles
-                ti_c1, ti_c2, ti_c3, ti_c4 = st.columns(4)
+                ti_c1, ti_c2, ti_c3, ti_c4, ti_c5 = st.columns(5)
                 
                 age_val = f"{int(v['posting_age_days'])} dias" if pd.notnull(v['posting_age_days']) else "Recente"
+                wm_val = v['work_mode'] or 'Não especificado'
+                exp_val = v['nivel_experiencia'] or 'Não especificada'
+                sal_val = v['salario'] or 'Não divulgado'
+                con_val = v['tipo_contrato'] or 'Não especificado'
                 
                 ti_c1.markdown(f"""<div class='info-block'><div class='info-block-label'>Idade Estimada</div><div class='info-block-value'>{age_val}</div></div>""", unsafe_allow_html=True)
-                ti_c2.markdown(f"""<div class='info-block'><div class='info-block-label'>Intervalo Salarial</div><div class='info-block-value'>{v['salario'] or 'Não divulgado'}</div></div>""", unsafe_allow_html=True)
-                ti_c3.markdown(f"""<div class='info-block'><div class='info-block-label'>Tipo de Contrato</div><div class='info-block-value'>{v['tipo_contrato'] or 'Não especificado'}</div></div>""", unsafe_allow_html=True)
-                ti_c4.markdown(f"""<div class='info-block'><div class='info-block-label'>Experiência</div><div class='info-block-value'>{v['nivel_experiencia'] or 'Não especificada'}</div></div>""", unsafe_allow_html=True)
+                ti_c2.markdown(f"""<div class='info-block'><div class='info-block-label'>Regime</div><div class='info-block-value'>{wm_val}</div></div>""", unsafe_allow_html=True)
+                ti_c3.markdown(f"""<div class='info-block'><div class='info-block-label'>Experiência</div><div class='info-block-value'>{exp_val}</div></div>""", unsafe_allow_html=True)
+                ti_c4.markdown(f"""<div class='info-block'><div class='info-block-label'>Salário</div><div class='info-block-value'>{sal_val}</div></div>""", unsafe_allow_html=True)
+                ti_c5.markdown(f"""<div class='info-block'><div class='info-block-label'>Contrato</div><div class='info-block-value'>{con_val}</div></div>""", unsafe_allow_html=True)
                 
                 # Job description and sidebar layout
                 layout_l, layout_r = st.columns([0.7, 0.3], gap="large")
@@ -672,6 +816,22 @@ with t2:
                 # Estado (Status) filter - default to Ativa
                 sel_status = f_c4.selectbox("Estado", ["Ativa", "Expirada", "Todas"], index=0, label_visibility="collapsed")
                 
+                # Secondary row of filters
+                st.markdown("<div style='margin-top: 8px;'></div>", unsafe_allow_html=True)
+                f2_c1, f2_c2, f2_c3 = st.columns([2, 1, 1])
+                
+                # Skills list (multi-select)
+                avail_skills = sorted(df_skills['skill'].dropna().unique().tolist()) if not df_skills.empty else []
+                sel_skills = f2_c1.multiselect("Filtrar por Competências", avail_skills, placeholder="Selecione competências (ex: React, Python)...", label_visibility="collapsed")
+                
+                # Work Mode list
+                avail_work_modes = ["Todos os Regimes", "Remote", "Hybrid", "On-site"]
+                sel_work_mode = f2_c2.selectbox("Regime de Trabalho", avail_work_modes, index=0, label_visibility="collapsed")
+                
+                # Seniority level list
+                avail_seniorities = ["Todas as Senioridades", "Júnior", "Mid-Level", "Sénior", "Lead", "C-Level", "VP", "Director", "Manager"]
+                sel_seniority = f2_c3.selectbox("Senioridade", avail_seniorities, index=0, label_visibility="collapsed")
+                
             # Filter Dataframe
             df_filtered = df_jobs_filtered.copy()
             
@@ -692,6 +852,25 @@ with t2:
             if sel_status != "Todas":
                 df_filtered = df_filtered[df_filtered['status'] == sel_status]
                 
+            if sel_skills:
+                matching_job_ids = None
+                for skill in sel_skills:
+                    jobs_with_skill = set(df_skills[df_skills['skill'] == skill]['job_id'])
+                    if matching_job_ids is None:
+                        matching_job_ids = jobs_with_skill
+                    else:
+                        matching_job_ids = matching_job_ids.intersection(jobs_with_skill)
+                if matching_job_ids is not None:
+                    df_filtered = df_filtered[df_filtered['id'].isin(matching_job_ids)]
+                else:
+                    df_filtered = df_filtered.iloc[0:0]
+                    
+            if sel_work_mode != "Todos os Regimes":
+                df_filtered = df_filtered[df_filtered['work_mode'] == sel_work_mode]
+                
+            if sel_seniority != "Todas as Senioridades":
+                df_filtered = df_filtered[df_filtered['nivel_experiencia'] == sel_seniority]
+                
             # Render export button in the 5th column of the filter bar
             with f_c5:
                 if not df_filtered.empty:
@@ -710,12 +889,15 @@ with t2:
             if df_filtered.empty:
                 st.info("Nenhuma vaga corresponde aos filtros selecionados.")
             else:
-                display_cols = ["titulo", "empresa", "job_type", "link", "plataforma", "status", "pais", "data_publicacao", "posting_age_days"]
+                display_cols = ["titulo", "empresa", "job_type", "link", "plataforma", "status", "pais", "work_mode", "nivel_experiencia", "competencias", "salario", "data_publicacao", "posting_age_days"]
                 df_show = df_filtered[display_cols].copy()
                 
-                # Clean platform display
+                # Clean display fields
                 df_show['plataforma'] = df_show['plataforma'].apply(lambda x: x.split('(')[0].strip())
                 df_show['posting_age_days'] = df_show['posting_age_days'].apply(lambda x: f"{int(x)} dias" if pd.notnull(x) else "Recente")
+                df_show['work_mode'] = df_show['work_mode'].replace({"": "Não especificado"}).fillna("Não especificado")
+                df_show['nivel_experiencia'] = df_show['nivel_experiencia'].replace({"": "Não especificado"}).fillna("Não especificado")
+                df_show['salario'] = df_show['salario'].replace({"": "Não divulgado"}).fillna("Não divulgado")
                 
                 # Format country representation
                 flags = {"Portugal": "🇵🇹 PT", "Reino Unido": "🇬🇧 UK", "Estados Unidos": "🇺🇸 USA", "Outro": "🌍 Outro"}
@@ -729,6 +911,10 @@ with t2:
                     "plataforma": "Plataforma",
                     "status": "Estado",
                     "pais": "País",
+                    "work_mode": "Regime",
+                    "nivel_experiencia": "Senioridade",
+                    "competencias": "Competências",
+                    "salario": "Salário",
                     "data_publicacao": "Extraído em",
                     "posting_age_days": "Idade Estimada"
                 }, inplace=True)
